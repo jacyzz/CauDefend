@@ -139,6 +139,8 @@ class InferDatasetReq(BaseModel):
     input_path: str
     output_path: str
     field: str
+    # When write_mode == "generation", write candidates into this field instead of hardcoded "generation"
+    output_field: Optional[str] = None
     model: InferModelCfg
     prompt: InferPromptCfg = InferPromptCfg()
     gen: InferGenParams = InferGenParams()
@@ -518,17 +520,22 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
 
         effective_flat = req.emit_flat or (req.gen.num_return_sequences and req.gen.num_return_sequences > 1)
         if req.write_mode == "generation":
+            dst_field = (
+                req.output_field.strip()
+                if (isinstance(req.output_field, str) and req.output_field.strip())
+                else "generation"
+            )
             if effective_flat:
                 for i, resp in enumerate(responses):
                     out_obj = dict(obj)
-                    out_obj["generation"] = resp
+                    out_obj[dst_field] = resp
                     out_obj["completion_id"] = i
                     if weights is not None and i < len(weights):
                         out_obj["variant_score"] = weights[i]
                     out_rows.append(out_obj)
             else:
                 out_obj = dict(obj)
-                out_obj["generation"] = responses[0] if responses else code
+                out_obj[dst_field] = responses[0] if responses else code
                 out_rows.append(out_obj)
         else:
             if effective_flat:
@@ -557,6 +564,7 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
             f"num_return_sequences={req.gen.num_return_sequences}",
             f"emit_flat={req.emit_flat}",
             f"write_mode={req.write_mode}",
+            f"output_field={req.output_field or ('generation' if req.write_mode == 'generation' else req.field)}",
             f"processed={len(rows)}",
         ],
     )
