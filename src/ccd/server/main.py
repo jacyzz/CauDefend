@@ -24,6 +24,12 @@ from ccd.inference.engine import (
     softmax_scores as eng_softmax,
 )
 
+# optional tqdm for progress in dataset inference
+try:
+    from tqdm.auto import tqdm  # type: ignore
+except Exception:  # pragma: no cover
+    def tqdm(x, **kwargs):
+        return x
 
 app = FastAPI(title="CCD Backend", version="0.1.0")
 
@@ -139,6 +145,9 @@ class InferDatasetReq(BaseModel):
     emit_flat: bool = True
     write_mode: str = Field("generation", description="'generation' | 'overwrite'")
     limit: int = 0
+    # Progress options (printed on server console; frontend remains unchanged)
+    progress: bool = True
+    progress_every: int = 10
 
 
 class InferDatasetResp(BaseModel):
@@ -493,11 +502,19 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
     rows = _read(req.input_path, limit=req.limit or 0)
     out_rows: List[Dict[str, Any]] = []
     t0 = time.time()
-    for obj in rows:
+    iterator = tqdm(rows, total=len(rows), desc="InferDataset", unit="sample") if req.progress else rows
+    for idx, obj in enumerate(iterator):
         code = obj.get(req.field, None)
         if not isinstance(code, str) or not code.strip():
             continue
         responses, weights, _decoded = generate_for_text(model, tok, code, pr_cfg, gen_cfg)
+        if req.progress and req.progress_every > 0 and (idx + 1) % req.progress_every == 0:
+            try:
+                # update tqdm postfix if available
+                if hasattr(iterator, "set_postfix_str"):
+                    iterator.set_postfix_str(f"processed={idx+1}")
+            except Exception:
+                pass
 
         effective_flat = req.emit_flat or (req.gen.num_return_sequences and req.gen.num_return_sequences > 1)
         if req.write_mode == "generation":
@@ -540,6 +557,7 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
             f"num_return_sequences={req.gen.num_return_sequences}",
             f"emit_flat={req.emit_flat}",
             f"write_mode={req.write_mode}",
+            f"processed={len(rows)}",
         ],
     )
 
