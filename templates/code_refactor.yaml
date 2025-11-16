@@ -1,0 +1,17 @@
+name: code_refactor
+messages:
+  - role: system
+    content: |-
+      {{ system_prompt }}
+      约束：
+      - 仅输出代码，不要解释。
+      - 确保可独立运行/粘贴。
+  - role: user
+    content: |-
+      {{ user_prompt }}
+      上下文（JSON）：{{ record | tojson }}
+      需要处理的代码：
+      ```
+      {{ code_input }}
+      ```
+

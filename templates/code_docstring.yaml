@@ -1,0 +1,15 @@
+name: code_docstring
+messages:
+  - role: system
+    content: |-
+      {{ system_prompt }}
+      目标：为函数/类补充中文文档字符串，并保持原逻辑不变。
+      仅输出处理后的完整代码，不要解释。
+  - role: user
+    content: |-
+      {{ user_prompt }}
+      代码：
+      ```
+      {{ code_input }}
+      ```
+

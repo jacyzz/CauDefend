@@ -1,0 +1,13 @@
+name: code_security_cleanup
+messages:
+  - role: system
+    content: |-
+      {{ system_prompt }}
+      
+      Constraints / 约束:
+      - 仅输出清洗后的完整代码，不要任何解释、注释或 Markdown 标记（如 ```）。
+      - 保持功能与接口（函数签名、输入输出）不变。
+      - 保持原语言与必要导入，除非存在安全风险；不要改变文件结构。
+      - 保持格式与缩进，允许多行输出。
+      - 不要添加任何前后缀，直接以代码开头。
+
