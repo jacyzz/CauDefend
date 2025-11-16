@@ -216,23 +216,53 @@ def generate_for_text(
     inputs = tokenizer(prompt, return_tensors="pt")
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
+    gen_kwargs = dict(
+        input_ids=inputs["input_ids"],
+        attention_mask=inputs.get("attention_mask", None),
+        max_new_tokens=gen_cfg.max_new_tokens,
+        do_sample=gen_cfg.do_sample,
+        temperature=gen_cfg.temperature,
+        top_p=gen_cfg.top_p,
+        num_beams=gen_cfg.num_beams,
+        num_return_sequences=gen_cfg.num_return_sequences,
+        num_beam_groups=gen_cfg.num_beam_groups,
+        diversity_penalty=gen_cfg.diversity_penalty,
+        return_dict_in_generate=True,
+        output_scores=True,
+        pad_token_id=tokenizer.pad_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+    # Sanitize incompatible combos: if no grouping, disable diversity
+    if (gen_kwargs.get("num_beam_groups") or 1) <= 1 and (gen_kwargs.get("diversity_penalty") or 0.0) > 0.0:
+        gen_kwargs["diversity_penalty"] = 0.0
     with torch.no_grad():
-        outputs = model.generate(
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs.get("attention_mask", None),
-            max_new_tokens=gen_cfg.max_new_tokens,
-            do_sample=gen_cfg.do_sample,
-            temperature=gen_cfg.temperature,
-            top_p=gen_cfg.top_p,
-            num_beams=gen_cfg.num_beams,
-            num_return_sequences=gen_cfg.num_return_sequences,
-            num_beam_groups=gen_cfg.num_beam_groups,
-            diversity_penalty=gen_cfg.diversity_penalty,
-            return_dict_in_generate=True,
-            output_scores=True,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
+        try:
+            outputs = model.generate(**gen_kwargs)
+        except RuntimeError as e:
+            msg = str(e)
+            # Known HF bug: bfloat16 + group beam search may raise dtype mismatch
+            if "Index put requires the source and destination dtypes match" in msg:
+                # Fallback A: disable group beam search
+                tried = False
+                if gen_cfg.num_beam_groups and gen_cfg.num_beam_groups > 1:
+                    gen_kwargs["num_beam_groups"] = 1
+                    gen_kwargs["diversity_penalty"] = 0.0
+                    try:
+                        outputs = model.generate(**gen_kwargs)
+                        tried = True
+                    except Exception:
+                        pass
+                if not tried:
+                    # Fallback B: cast model to float16 and retry
+                    try:
+                        first_param = next(model.parameters(), None)
+                        if first_param is not None and first_param.dtype == torch.bfloat16:
+                            model.to(torch.float16)
+                        outputs = model.generate(**gen_kwargs)
+                    except Exception:
+                        raise
+            else:
+                raise
     seqs = outputs.sequences
     seq_scores = outputs.sequences_scores if hasattr(outputs, "sequences_scores") else None
     weights = None

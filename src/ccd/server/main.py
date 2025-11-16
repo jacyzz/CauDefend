@@ -471,7 +471,8 @@ def infer_generate(req: InferTextReq) -> InferTextResp:
 
 @app.post("/api/infer/dataset", response_model=InferDatasetResp)
 def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
-    from ccd.inference.beam_infer import read_jsonl as _read, write_jsonl as _write, extract_response as _extract
+    # Reuse engine's robust text generator per record to avoid dtype/group-beam issues.
+    from ccd.inference.beam_infer import read_jsonl as _read, write_jsonl as _write
 
     model, tok = _get_or_load_model(req.model)
     gen_cfg = HfGenConfig(
@@ -496,37 +497,7 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
         code = obj.get(req.field, None)
         if not isinstance(code, str) or not code.strip():
             continue
-        # build prompt and generate
-        prompt = eng_build_prompt(code, eng_load_system_prompt(pr_cfg))
-        inputs = tok(prompt, return_tensors="pt")
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
-        with torch.no_grad():  # type: ignore
-            outputs = model.generate(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs.get("attention_mask", None),
-                max_new_tokens=gen_cfg.max_new_tokens,
-                do_sample=gen_cfg.do_sample,
-                temperature=gen_cfg.temperature,
-                top_p=gen_cfg.top_p,
-                num_beams=gen_cfg.num_beams,
-                num_return_sequences=gen_cfg.num_return_sequences,
-                num_beam_groups=gen_cfg.num_beam_groups,
-                diversity_penalty=gen_cfg.diversity_penalty,
-                return_dict_in_generate=True,
-                output_scores=True,
-                pad_token_id=tok.pad_token_id,
-                eos_token_id=tok.eos_token_id,
-            )
-        seqs = outputs.sequences
-        seq_scores = outputs.sequences_scores if hasattr(outputs, "sequences_scores") else None
-        weights = None
-        if seq_scores is not None:
-            weights = eng_softmax(seq_scores).tolist()
-        decoded = [tok.decode(s, skip_special_tokens=True) for s in seqs]
-        responses = []
-        for t in decoded:
-            r = _extract(t)
-            responses.append(r if r.strip() else (t.strip() or code))
+        responses, weights, _decoded = generate_for_text(model, tok, code, pr_cfg, gen_cfg)
 
         effective_flat = req.emit_flat or (req.gen.num_return_sequences and req.gen.num_return_sequences > 1)
         if req.write_mode == "generation":

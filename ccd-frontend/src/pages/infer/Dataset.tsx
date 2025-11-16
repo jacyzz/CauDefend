@@ -106,11 +106,11 @@ export default function InferDataset() {
                   top_p: 1.0,
                   num_beams: 4,
                   num_return_sequences: 4,
-                  num_beam_groups: 4,
-                  diversity_penalty: 0.1,
+                  num_beam_groups: 1,
+                  diversity_penalty: 0.0,
                   max_new_tokens: 512,
                   seed: 123456,
-                  write_mode: 'generation',
+                  write_mode: 'overwrite',
                   emit_flat: true,
                 }}
               >
