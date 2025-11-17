@@ -35,6 +35,7 @@ export type InferTextReq = {
   prompt?: InferPromptCfg;
   gen?: InferGenParams;
   return_decoded?: boolean;
+  unload_after?: boolean;
 };
 
 export type InferTextResp = {
@@ -54,12 +55,14 @@ export type InferDatasetReq = {
   input_path: string;
   output_path: string;
   field: string;
+  output_field?: string;
   model: InferModelCfg;
   prompt?: InferPromptCfg;
   gen?: InferGenParams;
   emit_flat?: boolean;
   write_mode?: 'generation' | 'overwrite';
   limit?: number;
+  unload_after?: boolean;
 };
 
 export type InferDatasetResp = {
@@ -72,6 +75,16 @@ export type InferDatasetResp = {
 
 export async function inferDataset(body: InferDatasetReq) {
   const { data } = await http.post<InferDatasetResp>('/infer/dataset', body);
+  return data;
+}
+
+export async function unloadModel(body: { model: InferModelCfg }): Promise<{ ok: boolean }> {
+  const { data } = await http.post<{ ok: boolean }>('/infer/unload', body);
+  return data;
+}
+
+export async function unloadAll(): Promise<{ ok: boolean; cleared: boolean; remaining: number }> {
+  const { data } = await http.post<{ ok: boolean; cleared: boolean; remaining: number }>('/infer/unload_all', {});
   return data;
 }
 

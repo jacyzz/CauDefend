@@ -5,6 +5,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import gc
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -125,6 +126,7 @@ class InferTextReq(BaseModel):
     prompt: InferPromptCfg = InferPromptCfg()
     gen: InferGenParams = InferGenParams()
     return_decoded: bool = False
+    unload_after: bool = False
 
 
 class InferTextResp(BaseModel):
@@ -150,6 +152,7 @@ class InferDatasetReq(BaseModel):
     # Progress options (printed on server console; frontend remains unchanged)
     progress: bool = True
     progress_every: int = 10
+    unload_after: bool = False
 
 
 class InferDatasetResp(BaseModel):
@@ -194,6 +197,49 @@ def _get_or_load_model(cfg: InferModelCfg):
     model, tok = load_model_and_tokenizer(hf_cfg)
     _MODEL_CACHE[k] = (model, tok)
     return model, tok
+
+
+def _release_model(cfg: InferModelCfg) -> bool:
+    """Remove model from cache and try to free GPU memory."""
+    k = _model_cache_key(cfg)
+    item = _MODEL_CACHE.pop(k, None)
+    if item is None:
+        try:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                try:
+                    torch.cuda.ipc_collect()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return False
+    model, tok = item
+    try:
+        if hasattr(model, "cpu"):
+            model.cpu()
+    except Exception:
+        pass
+    try:
+        del model
+    except Exception:
+        pass
+    try:
+        del tok
+    except Exception:
+        pass
+    try:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return True
 
 
 def _read_jsonl(path: Path, limit: int = 0) -> List[Dict[str, Any]]:
@@ -462,6 +508,11 @@ def infer_generate(req: InferTextReq) -> InferTextResp:
     t0 = time.time()
     responses, weights, decoded = generate_for_text(model, tok, req.input_text, pr_cfg, gen_cfg)
     ms = int((time.time() - t0) * 1000)
+    if req.unload_after:
+        try:
+            _release_model(req.model)
+        except Exception:
+            pass
     return InferTextResp(
         candidates=responses,
         scores=weights,
@@ -475,6 +526,7 @@ def infer_generate(req: InferTextReq) -> InferTextResp:
             f"temperature={req.gen.temperature}",
             f"top_p={req.gen.top_p}",
             f"max_new_tokens={req.gen.max_new_tokens}",
+            f"unload_after={req.unload_after}",
         ],
         decoded=decoded if req.return_decoded else None,
     )
@@ -554,6 +606,11 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
     _write(req.output_path, out_rows)
     ms = int((time.time() - t0) * 1000)
     preview = out_rows[: min(5, len(out_rows))]
+    if req.unload_after:
+        try:
+            _release_model(req.model)
+        except Exception:
+            pass
     return InferDatasetResp(
         total=len(rows),
         output_path=req.output_path,
@@ -566,7 +623,48 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
             f"write_mode={req.write_mode}",
             f"output_field={req.output_field or ('generation' if req.write_mode == 'generation' else req.field)}",
             f"processed={len(rows)}",
+            f"unload_after={req.unload_after}",
         ],
     )
+
+
+class InferUnloadReq(BaseModel):
+    model: InferModelCfg
+
+
+@app.post("/api/infer/unload")
+def infer_unload(req: InferUnloadReq) -> Dict[str, Any]:
+    ok = _release_model(req.model)
+    return {"ok": ok}
+
+
+@app.post("/api/infer/unload_all")
+def infer_unload_all() -> Dict[str, Any]:
+    keys = list(_MODEL_CACHE.keys())
+    any_ok = False
+    for k in keys:
+        try:
+            model, tok = _MODEL_CACHE.pop(k)
+            try:
+                if hasattr(model, "cpu"):
+                    model.cpu()
+            except Exception:
+                pass
+            del model
+            del tok
+            any_ok = True
+        except Exception:
+            pass
+    try:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return {"ok": any_ok, "cleared": True, "remaining": len(_MODEL_CACHE)}
 
 

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Card, Col, Divider, Form, Input, InputNumber, Radio, Row, Select, Space, Switch, Table, Typography, message } from 'antd';
+import { Button, Card, Col, Divider, Form, Input, InputNumber, Radio, Row, Select, Space, Switch, Table, Tabs, Typography, message } from 'antd';
 import { inferDataset } from '../../api/infer';
 import type { InferDatasetReq, InferGenParams, InferModelCfg, InferPromptCfg } from '../../api/infer';
 
@@ -50,6 +50,7 @@ export default function InferDataset() {
         input_path: v.input_path,
         output_path: v.output_path,
         field: v.field,
+        output_field: v.output_field || undefined,
         model,
         prompt,
         gen,
@@ -94,7 +95,7 @@ export default function InferDataset() {
           </Col>
 
           <Col flex="420px">
-            <Card size="small" title="数据集配置" style={{ marginBottom: 16 }}>
+            <Card size="small" title="参数设置" style={{ marginBottom: 16 }}>
               <Form
                 form={form}
                 layout="vertical"
@@ -114,100 +115,177 @@ export default function InferDataset() {
                   emit_flat: true,
                 }}
               >
-                <Form.Item name="input_path" label="输入 JSONL 路径" rules={[{ required: true }]}>
-                  <Input placeholder="/path/to/input.jsonl" />
-                </Form.Item>
-                <Form.Item name="field" label="处理字段" rules={[{ required: true }]}>
-                  <Input placeholder="canonical_solution 或 code 等" />
-                </Form.Item>
-                <Form.Item name="output_path" label="输出 JSONL 路径" rules={[{ required: true }]}>
-                  <Input placeholder="/path/to/output.jsonl" />
-                </Form.Item>
-                <Form.Item name="limit" label="限制条数（0=全部）">
-                  <InputNumber min={0} step={1} style={{ width: '100%' }} />
-                </Form.Item>
-                <Form.Item name="write_mode" label="写入模式">
-                  <Select
-                    options={[
-                      { label: '写入 generation 字段（用于 pass@k）', value: 'generation' },
-                      { label: '覆盖原字段（overwrite）', value: 'overwrite' },
-                    ]}
-                  />
-                </Form.Item>
-                <Form.Item name="emit_flat" label="多候选展开多行（emit_flat）" valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-              </Form>
-            </Card>
-
-            <Card size="small" title="模型与模板" style={{ marginBottom: 16 }}>
-              <Form form={form} layout="vertical">
-                <Form.Item name="model" label="模型路径/名称" rules={[{ required: true }]}>
-                  <Input placeholder="/path/to/merged-or-base-model" />
-                </Form.Item>
-                <Form.Item name="base_model" label="底座模型（可选，用于LoRA）">
-                  <Input placeholder="/path/to/base-model" />
-                </Form.Item>
-                <Form.Item name="peft_adapter" label="PEFT 适配器（可选）">
-                  <Input placeholder="/path/to/adapter-dir (含 adapter_config.json)" />
-                </Form.Item>
-                <Form.Item name="peft_merge" label="合并LoRA到权重" valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-                <Form.Item name="dtype" label="dtype">
-                  <Select options={DTYPE_OPTIONS} />
-                </Form.Item>
-                <Form.Item name="device_map" label="device_map">
-                  <Input placeholder="auto / cuda:0 / balanced 等" />
-                </Form.Item>
-                <Form.Item name="trust_remote_code" label="trust_remote_code" valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-                <Form.Item name="low_cpu_mem_usage" label="low_cpu_mem_usage" valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-                <Form.Item name="use_safetensors" label="use_safetensors" valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-                <Divider />
-                <Form.Item name="template_yaml" label="模板 YAML（可选）">
-                  <Input placeholder="/path/to/template.yaml（含 {{ system_prompt }} 占位符）" />
-                </Form.Item>
-                <Form.Item name="system_prompt_text" label="系统提示文本">
-                  <Input.TextArea rows={3} placeholder="默认代码重构安全提示，可自定义" />
-                </Form.Item>
-              </Form>
-            </Card>
-
-            <Card size="small" title="生成参数（Beam Search）">
-              <Form form={form} layout="vertical">
-                <Form.Item name="num_beams" label="num_beams">
-                  <InputNumber min={1} max={32} style={{ width: '100%' }} />
-                </Form.Item>
-                <Form.Item name="num_return_sequences" label="num_return_sequences">
-                  <InputNumber min={1} max={32} style={{ width: '100%' }} />
-                </Form.Item>
-                <Form.Item name="num_beam_groups" label="num_beam_groups">
-                  <InputNumber min={1} max={32} style={{ width: '100%' }} />
-                </Form.Item>
-                <Form.Item name="diversity_penalty" label="diversity_penalty">
-                  <InputNumber min={0} max={10} step={0.05} style={{ width: '100%' }} />
-                </Form.Item>
-                <Form.Item name="do_sample" label="do_sample" valuePropName="checked">
-                  <Switch />
-                </Form.Item>
-                <Form.Item name="temperature" label="temperature">
-                  <InputNumber min={0} max={2} step={0.05} style={{ width: '100%' }} />
-                </Form.Item>
-                <Form.Item name="top_p" label="top_p">
-                  <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} />
-                </Form.Item>
-                <Form.Item name="max_new_tokens" label="max_new_tokens">
-                  <InputNumber min={1} max={4096} style={{ width: '100%' }} />
-                </Form.Item>
-                <Form.Item name="seed" label="seed">
-                  <InputNumber min={0} max={2 ** 31 - 1} style={{ width: '100%' }} />
-                </Form.Item>
+                <Tabs
+                  defaultActiveKey="data"
+                  items={[
+                    {
+                      key: 'data',
+                      label: '数据集',
+                      children: (
+                        <>
+                          <Form.Item name="input_path" label="输入 JSONL 路径" rules={[{ required: true }]}>
+                            <Input placeholder="/path/to/input.jsonl" />
+                          </Form.Item>
+                          <Form.Item name="field" label="处理字段" rules={[{ required: true }]}>
+                            <Input placeholder="canonical_solution 或 code 等" />
+                          </Form.Item>
+                          <Form.Item name="output_path" label="输出 JSONL 路径" rules={[{ required: true }]}>
+                            <Input placeholder="/path/to/output.jsonl" />
+                          </Form.Item>
+                          <Form.Item name="limit" label="限制条数（0=全部）">
+                            <InputNumber min={0} step={1} style={{ width: '100%' }} />
+                          </Form.Item>
+                          <Form.Item name="write_mode" label="写入模式">
+                            <Select
+                              options={[
+                                { label: '写入指定字段（generation 模式）', value: 'generation' },
+                                { label: '覆盖原字段（overwrite）', value: 'overwrite' },
+                              ]}
+                            />
+                          </Form.Item>
+                          <Form.Item noStyle shouldUpdate>
+                            {({ getFieldValue }) =>
+                              getFieldValue('write_mode') === 'generation' ? (
+                                <Form.Item
+                                  name="output_field"
+                                  label="写入字段（generation 模式）"
+                                  rules={[{ required: true, message: '请指定写入字段' }]}
+                                >
+                                  <Input placeholder="如 generation 或 pred_code" />
+                                </Form.Item>
+                              ) : null
+                            }
+                          </Form.Item>
+                          <Form.Item name="emit_flat" label="多候选展开多行（emit_flat）" valuePropName="checked">
+                            <Switch />
+                          </Form.Item>
+                        </>
+                      ),
+                    },
+                    {
+                      key: 'model',
+                      label: '模型 / LoRA',
+                      children: (
+                        <>
+                          <Form.Item name="model" label="模型路径/名称" rules={[{ required: true }]}>
+                            <Input placeholder="/path/to/merged-or-base-model" />
+                          </Form.Item>
+                          <Form.Item name="base_model" label="底座模型（可选，用于LoRA）">
+                            <Input placeholder="/path/to/base-model" />
+                          </Form.Item>
+                          <Form.Item name="peft_adapter" label="PEFT 适配器（可选）">
+                            <Input placeholder="/path/to/adapter-dir (含 adapter_config.json)" />
+                          </Form.Item>
+                          <Form.Item name="peft_merge" label="合并LoRA到权重" valuePropName="checked">
+                            <Switch />
+                          </Form.Item>
+                          <Row gutter={8}>
+                            <Col span={12}>
+                              <Form.Item name="dtype" label="dtype">
+                                <Select options={DTYPE_OPTIONS} />
+                              </Form.Item>
+                            </Col>
+                            <Col span={12}>
+                              <Form.Item name="device_map" label="device_map">
+                                <Input placeholder="auto / cuda:0 / balanced 等" />
+                              </Form.Item>
+                            </Col>
+                          </Row>
+                          <Row gutter={8}>
+                            <Col span={8}>
+                              <Form.Item name="trust_remote_code" label="trust_remote_code" valuePropName="checked">
+                                <Switch />
+                              </Form.Item>
+                            </Col>
+                            <Col span={8}>
+                              <Form.Item name="low_cpu_mem_usage" label="low_cpu_mem_usage" valuePropName="checked">
+                                <Switch />
+                              </Form.Item>
+                            </Col>
+                            <Col span={8}>
+                              <Form.Item name="use_safetensors" label="use_safetensors" valuePropName="checked">
+                                <Switch />
+                              </Form.Item>
+                            </Col>
+                          </Row>
+                        </>
+                      ),
+                    },
+                    {
+                      key: 'prompt',
+                      label: '提示模板',
+                      children: (
+                        <>
+                          <Form.Item name="template_yaml" label="模板 YAML（可选）">
+                            <Input placeholder="/path/to/template.yaml（含 {{ system_prompt }} 占位符）" />
+                          </Form.Item>
+                          <Form.Item name="system_prompt_text" label="系统提示文本">
+                            <Input.TextArea rows={3} placeholder="默认代码重构安全提示，可自定义" />
+                          </Form.Item>
+                        </>
+                      ),
+                    },
+                    {
+                      key: 'gen',
+                      label: '生成参数',
+                      children: (
+                        <>
+                          <Row gutter={8}>
+                            <Col span={12}>
+                              <Form.Item name="num_beams" label="num_beams">
+                                <InputNumber min={1} max={32} style={{ width: '100%' }} />
+                              </Form.Item>
+                            </Col>
+                            <Col span={12}>
+                              <Form.Item name="num_return_sequences" label="num_return_sequences">
+                                <InputNumber min={1} max={32} style={{ width: '100%' }} />
+                              </Form.Item>
+                            </Col>
+                          </Row>
+                          <Row gutter={8}>
+                            <Col span={12}>
+                              <Form.Item name="num_beam_groups" label="num_beam_groups">
+                                <InputNumber min={1} max={32} style={{ width: '100%' }} />
+                              </Form.Item>
+                            </Col>
+                            <Col span={12}>
+                              <Form.Item name="diversity_penalty" label="diversity_penalty">
+                                <InputNumber min={0} max={10} step={0.05} style={{ width: '100%' }} />
+                              </Form.Item>
+                            </Col>
+                          </Row>
+                          <Row gutter={8}>
+                            <Col span={12}>
+                              <Form.Item name="do_sample" label="do_sample" valuePropName="checked">
+                                <Switch />
+                              </Form.Item>
+                            </Col>
+                            <Col span={12}>
+                              <Form.Item name="temperature" label="temperature">
+                                <InputNumber min={0} max={2} step={0.05} style={{ width: '100%' }} />
+                              </Form.Item>
+                            </Col>
+                          </Row>
+                          <Row gutter={8}>
+                            <Col span={12}>
+                              <Form.Item name="top_p" label="top_p">
+                                <InputNumber min={0} max={1} step={0.01} style={{ width: '100%' }} />
+                              </Form.Item>
+                            </Col>
+                            <Col span={12}>
+                              <Form.Item name="max_new_tokens" label="max_new_tokens">
+                                <InputNumber min={1} max={4096} style={{ width: '100%' }} />
+                              </Form.Item>
+                            </Col>
+                          </Row>
+                          <Form.Item name="seed" label="seed">
+                            <InputNumber min={0} max={2 ** 31 - 1} style={{ width: '100%' }} />
+                          </Form.Item>
+                        </>
+                      ),
+                    },
+                  ]}
+                />
               </Form>
             </Card>
 
