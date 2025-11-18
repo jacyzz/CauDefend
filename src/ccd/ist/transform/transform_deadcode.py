@@ -63,13 +63,32 @@ def convert_deadcode_test_message(node, code):
     elif get_lang() == "php":
         deadcode = 'if (1 == -1) { echo "INFO Test message:aaaaa"; }'    
         
-    indent = get_indent(block_node.children[1].start_byte, code)
-    return [(block_node.children[0].end_byte, f"\n{' '*indent}{deadcode}")]
+    # Robust indent and insertion position
+    idx_for_indent = None
+    try:
+        idx_for_indent = block_node.children[1].start_byte
+    except Exception:
+        idx_for_indent = None
+    if idx_for_indent is None and hasattr(block_node, "end_byte"):
+        idx_for_indent = block_node.end_byte
+    indent = get_indent(idx_for_indent, code) if idx_for_indent is not None else 0
+    if get_lang() == "python" and indent <= 0:
+        indent = 4
+    insert_at = block_node.children[0].end_byte if block_node.children else block_node.start_byte
+    return [(insert_at, f"\n{' '*indent}{deadcode}")]
 
 
 def convert_deadcode_233(node, code):
     block_node = None
-    block_mapping = {"c": "compound_statement", "java": "block", "c_sharp": "block"}
+    block_mapping = {
+        "c": "compound_statement",
+        "java": "block",
+        "c_sharp": "block",
+        "python": "block",
+        "javascript": "statement_block",
+        "go": "block",
+        "php": "compound_statement",
+    }
     for u in node.children:
         if u.type == block_mapping[get_lang()]:
             block_node = u
@@ -81,9 +100,30 @@ def convert_deadcode_233(node, code):
     elif get_lang() == "c_sharp":
         deadcode = "Console.WriteLine(233);"
     elif get_lang() == "c":
-        deadcode = 'printf("233233233233233233233233233233233233233\n");'
-    indent = get_indent(block_node.children[1].start_byte, code)
-    return [(block_node.children[0].end_byte, f"\n{' '*indent}{deadcode}")]
+        deadcode = 'printf("233233233233233233233233233233233233233\\n");'
+    elif get_lang() == "python":
+        deadcode = "if 1 == -1: print(233)"
+    elif get_lang() == "javascript":
+        deadcode = "if (1 == -1) { console.log(233); }"
+    elif get_lang() == "go":
+        deadcode = "if 1 == -1 { fmt.Println(233) }"
+    elif get_lang() == "php":
+        deadcode = "if (1 == -1) { echo 233; }"
+    else:
+        return
+    # Robust indent and insertion position
+    idx_for_indent = None
+    try:
+        idx_for_indent = block_node.children[1].start_byte
+    except Exception:
+        idx_for_indent = None
+    if idx_for_indent is None and hasattr(block_node, "end_byte"):
+        idx_for_indent = block_node.end_byte
+    indent = get_indent(idx_for_indent, code) if idx_for_indent is not None else 0
+    if get_lang() == "python" and indent <= 0:
+        indent = 4
+    insert_at = block_node.children[0].end_byte if block_node.children else block_node.start_byte
+    return [(insert_at, f"\n{' '*indent}{deadcode}")]
 
 
 def count_deadcode_test_message(root):
