@@ -34,8 +34,12 @@ export default function StylePicker({ styles, value, onChange }: Props) {
     return styles.filter((s) => s.code.includes(q) || s.type.includes(q) || s.subtype.includes(q)).map((s) => s.code);
   }, [styles, query]);
 
-  const onGroupChange = (codes: CheckboxValueType[]) => {
-    onChange(codes as string[]);
+  const handleGroupChange = (groupCodes: string[]) => (codes: CheckboxValueType[]) => {
+    // Merge selection for this group with existing selections from other groups
+    const selectedInGroup = (codes as string[]) || [];
+    const other = (value || []).filter((c) => !groupCodes.includes(c));
+    const next = Array.from(new Set([...other, ...selectedInGroup]));
+    onChange(next);
   };
 
   return (
@@ -52,10 +56,17 @@ export default function StylePicker({ styles, value, onChange }: Props) {
             .filter((s) => filteredCodes.includes(s.code))
             .map((s) => ({ label: `${s.code} (${s.subtype})`, value: s.code }));
           if (options.length === 0) return null;
+          const codesInGroup = arr.map((s) => s.code);
+          const groupValue = (value || []).filter((c) => codesInGroup.includes(c));
           return (
             <div key={fam} style={{ marginBottom: 8 }}>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>Group {fam}</div>
-              <Checkbox.Group options={options} value={value} onChange={onGroupChange} style={{ width: '100%' }} />
+              <Checkbox.Group
+                options={options}
+                value={groupValue}
+                onChange={handleGroupChange(codesInGroup)}
+                style={{ width: '100%' }}
+              />
               <Divider style={{ margin: '8px 0' }} />
             </div>
           );

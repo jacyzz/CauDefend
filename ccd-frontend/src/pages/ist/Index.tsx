@@ -5,6 +5,7 @@ import IstDatasetPage from './Dataset';
 export default function IstHome() {
   return (
     <Tabs
+     destroyInactiveTabPane={false}
      defaultActiveKey="single"
      items={[
        { key: 'single', label: '单一风格', children: <IstSinglePage /> },

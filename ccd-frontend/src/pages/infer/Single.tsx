@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Card, Col, Divider, Form, Input, InputNumber, Row, Segmented, Select, Space, Switch, Table, Tag, Tabs, Typography, message } from 'antd';
 import CodePane from '../../components/CodePane';
-import { inferGenerate } from '../../api/infer';
+import { inferGenerate, unloadModel } from '../../api/infer';
 import type { InferGenParams, InferModelCfg, InferPromptCfg } from '../../api/infer';
 
 const { Text } = Typography;
@@ -21,6 +21,55 @@ export default function InferSingle() {
   const [decoded, setDecoded] = useState<string[] | undefined>();
 
   const disableRun = useMemo(() => !input.trim(), [input]);
+
+  // Persist form and input across route/tab switches
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('infer_single_form');
+      if (saved) {
+        const vals = JSON.parse(saved);
+        form.setFieldsValue(vals);
+      }
+      const savedInput = localStorage.getItem('infer_single_input') || '';
+      if (savedInput) setInput(savedInput);
+    } catch {}
+    // unload on leave if enabled
+    return () => {
+      try {
+        const vals = form.getFieldsValue();
+        if (vals?.unload_on_leave) {
+          const model: InferModelCfg | undefined = vals?.model || vals?.model === '' ? undefined : {
+            model: vals.model,
+            dtype: vals.dtype,
+            device_map: vals.device_map ?? 'auto',
+            trust_remote_code: !!vals.trust_remote_code,
+            low_cpu_mem_usage: !!vals.low_cpu_mem_usage,
+            use_safetensors: !!vals.use_safetensors,
+            base_model: vals.base_model || undefined,
+            peft_adapter: vals.peft_adapter || undefined,
+            peft_merge: !!vals.peft_merge,
+          };
+          if (model && typeof model.model === 'string' && model.model.trim()) {
+            // fire and forget
+            unloadModel({ model }).catch(() => void 0);
+          }
+        }
+      } catch {}
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleValuesChange = (_: any, allValues: any) => {
+    try {
+      localStorage.setItem('infer_single_form', JSON.stringify(allValues));
+    } catch {}
+  };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('infer_single_input', input);
+    } catch {}
+  }, [input]);
 
   const onRun = async () => {
     try {
@@ -59,6 +108,7 @@ export default function InferSingle() {
         prompt,
         gen,
         return_decoded: true,
+        unload_after: !!vals.unload_after,
       });
       const cands = res.candidates.map((t, i) => ({ text: t, score: res.scores?.[i] }));
       setCandidates(cands);
@@ -130,6 +180,7 @@ export default function InferSingle() {
               <Form
                 form={form}
                 layout="vertical"
+                onValuesChange={handleValuesChange}
                 initialValues={{
                   dtype: 'bfloat16',
                   device_map: 'auto',
@@ -142,6 +193,7 @@ export default function InferSingle() {
                   diversity_penalty: 0.0,
                   max_new_tokens: 512,
                   seed: 123456,
+                  unload_after: false,
                 }}
               >
                 <Tabs
@@ -274,6 +326,12 @@ export default function InferSingle() {
                           <Form.Item name="seed" label="seed">
                             <InputNumber min={0} max={2 ** 31 - 1} style={{ width: '100%' }} />
                           </Form.Item>
+                          <Form.Item name="unload_after" label="推理后释放显存（unload_after）" valuePropName="checked">
+                            <Switch />
+                          </Form.Item>
+                  <Form.Item name="unload_on_leave" label="离开页面释放显存（unload_on_leave）" valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
                         </>
                       ),
                     },

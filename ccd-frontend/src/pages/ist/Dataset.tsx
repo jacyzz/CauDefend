@@ -20,8 +20,40 @@ export default function IstDatasetPage() {
   const useRandom: boolean = (Form.useWatch('use_random', form) as boolean) ?? false;
 
   useEffect(() => {
+    // hydrate persisted
+    try {
+      const savedForm = localStorage.getItem('ist_dataset_form');
+      if (savedForm) form.setFieldsValue(JSON.parse(savedForm));
+      const savedPool = localStorage.getItem('ist_dataset_pool');
+      if (savedPool) setPool(JSON.parse(savedPool));
+      const savedSelected = localStorage.getItem('ist_dataset_selected');
+      if (savedSelected) setSelected(JSON.parse(savedSelected));
+    } catch {}
     fetchStyles().then(setAllStyles).catch((e) => message.error(e.message));
+    return () => {
+      try {
+        localStorage.setItem('ist_dataset_form', JSON.stringify(form.getFieldsValue()));
+        localStorage.setItem('ist_dataset_pool', JSON.stringify(pool));
+        localStorage.setItem('ist_dataset_selected', JSON.stringify(selected));
+      } catch {}
+    };
   }, []);
+
+  const onValuesChange = (_: any, all: any) => {
+    try {
+      localStorage.setItem('ist_dataset_form', JSON.stringify(all));
+    } catch {}
+  };
+  useEffect(() => {
+    try {
+      localStorage.setItem('ist_dataset_pool', JSON.stringify(pool));
+    } catch {}
+  }, [pool]);
+  useEffect(() => {
+    try {
+      localStorage.setItem('ist_dataset_selected', JSON.stringify(selected));
+    } catch {}
+  }, [selected]);
 
   const onRun = async () => {
     try {
@@ -50,6 +82,7 @@ export default function IstDatasetPage() {
         poison_candidates: useRandom ? pool : undefined,
         limit: Number(v.limit || 0),
         seed: v.seed ? Number(v.seed) : undefined,
+        syntax_check: !!v.syntax_check,
       };
       const res = await transformDataset(body);
       setSummary({ total: res.total, changed: res.changed, success: res.success, output_path: res.output_path });
@@ -69,6 +102,7 @@ export default function IstDatasetPage() {
         <Form
           form={form}
           layout="vertical"
+          onValuesChange={onValuesChange}
           initialValues={{ language: 'python', use_random: false, poison_min: 2, poison_max: 3, avoid_similar: true }}
         >
           <Row gutter={16}>
@@ -153,6 +187,11 @@ export default function IstDatasetPage() {
             <Col span={6}>
               <Form.Item name="seed" label="随机种子">
                 <Input placeholder="可选" type="number" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item name="syntax_check" label="语法检查（解析 AST）" valuePropName="checked" tooltip="启用后，会在转换后做一次树解析检查并记录结果">
+                <Switch />
               </Form.Item>
             </Col>
             <Col span={12} style={{ display: 'flex', alignItems: 'end', gap: 8 }}>

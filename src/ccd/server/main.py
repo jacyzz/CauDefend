@@ -79,6 +79,7 @@ class TransformDatasetReq(BaseModel):
     avoid_similar: bool = True
     limit: int = 0
     seed: Optional[int] = None
+    syntax_check: bool = False
 
 
 class TransformDatasetResp(BaseModel):
@@ -383,6 +384,7 @@ def transform_dataset(req: TransformDatasetReq) -> TransformDatasetResp:
     total = 0
     changed = 0
     success = 0
+    syntax_failed = 0
     out_rows: List[Dict[str, Any]] = []
     run_log: List[Dict[str, Any]] = []
 
@@ -428,12 +430,22 @@ def transform_dataset(req: TransformDatasetReq) -> TransformDatasetResp:
             out_obj[req.backup_field] = code_val
         out_obj[req.code_field] = current
         out_obj.setdefault("ist", {})
+        syntax_ok = True
+        if req.syntax_check:
+            try:
+                syntax_ok = bool(st.check_syntax(current))
+            except Exception:
+                syntax_ok = False
+            if not syntax_ok:
+                syntax_failed += 1
         out_obj["ist"].update(
             {
                 "language": req.language,
                 "attempted_styles": styles_to_apply,
                 "applied_styles": applied,
                 "success": ok_any,
+                "syntax_checked": req.syntax_check,
+                "syntax_ok": syntax_ok,
             }
         )
         if ok_any:
@@ -448,6 +460,8 @@ def transform_dataset(req: TransformDatasetReq) -> TransformDatasetResp:
                     "status": "ok" if ok_any else "no-change",
                     "applied_styles": applied,
                     "changed": current != code_val,
+                    "syntax_checked": req.syntax_check,
+                    "syntax_ok": syntax_ok,
                 }
             )
 

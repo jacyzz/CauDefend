@@ -5,6 +5,7 @@ import InferDataset from './Dataset';
 export default function InferHome() {
   return (
     <Tabs
+      destroyInactiveTabPane={false}
       defaultActiveKey="single"
       items={[
         { key: 'single', label: '单条推理', children: <InferSingle /> },

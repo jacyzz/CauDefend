@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import { Button, Card, Col, Divider, Form, Input, InputNumber, Radio, Row, Select, Space, Switch, Table, Tabs, Typography, message } from 'antd';
-import { inferDataset } from '../../api/infer';
+import { useEffect, useState } from 'react';
+import { Button, Card, Col, Divider, Form, Input, InputNumber, Row, Select, Space, Switch, Tabs, Typography, message } from 'antd';
+import { inferDataset, unloadModel } from '../../api/infer';
 import type { InferDatasetReq, InferGenParams, InferModelCfg, InferPromptCfg } from '../../api/infer';
 
 const { Text } = Typography;
@@ -16,6 +16,45 @@ export default function InferDataset() {
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [preview, setPreview] = useState<any[]>([]);
+
+  // Persist form across route/tab switches and optionally unload on leave
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('infer_dataset_form');
+      if (saved) {
+        const vals = JSON.parse(saved);
+        form.setFieldsValue(vals);
+      }
+    } catch {}
+    return () => {
+      try {
+        const v = form.getFieldsValue();
+        if (v?.unload_on_leave) {
+          const model: InferModelCfg | undefined = v?.model || v?.model === '' ? undefined : {
+            model: v.model,
+            dtype: v.dtype,
+            device_map: v.device_map ?? 'auto',
+            trust_remote_code: !!v.trust_remote_code,
+            low_cpu_mem_usage: !!v.low_cpu_mem_usage,
+            use_safetensors: !!v.use_safetensors,
+            base_model: v.base_model || undefined,
+            peft_adapter: v.peft_adapter || undefined,
+            peft_merge: !!v.peft_merge,
+          };
+          if (model && typeof model.model === 'string' && model.model.trim()) {
+            unloadModel({ model }).catch(() => void 0);
+          }
+        }
+      } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleValuesChange = (_: any, allValues: any) => {
+    try {
+      localStorage.setItem('infer_dataset_form', JSON.stringify(allValues));
+    } catch {}
+  };
 
   const onRun = async () => {
     try {
@@ -57,6 +96,7 @@ export default function InferDataset() {
         emit_flat: v.emit_flat,
         write_mode: v.write_mode,
         limit: v.limit ?? 0,
+        unload_after: !!v.unload_after,
       };
       setLoading(true);
       setLogs([]);
@@ -88,7 +128,7 @@ export default function InferDataset() {
                 <Text type="secondary">暂无预览</Text>
               ) : (
                 <pre style={{ background: '#0b0b0b', color: '#ddd', padding: 8, maxHeight: 560, overflow: 'auto' }}>
-                  {preview.map((r, i) => JSON.stringify(r, null, 2)).join('\n\n-----\n\n')}
+                  {preview.map((r) => JSON.stringify(r, null, 2)).join('\n\n-----\n\n')}
                 </pre>
               )}
             </Card>
@@ -99,6 +139,7 @@ export default function InferDataset() {
               <Form
                 form={form}
                 layout="vertical"
+                onValuesChange={handleValuesChange}
                 initialValues={{
                   dtype: 'bfloat16',
                   device_map: 'auto',
@@ -113,6 +154,7 @@ export default function InferDataset() {
                   seed: 123456,
                   write_mode: 'overwrite',
                   emit_flat: true,
+                  unload_after: false,
                 }}
               >
                 <Tabs
@@ -157,6 +199,12 @@ export default function InferDataset() {
                             }
                           </Form.Item>
                           <Form.Item name="emit_flat" label="多候选展开多行（emit_flat）" valuePropName="checked">
+                            <Switch />
+                          </Form.Item>
+                          <Form.Item name="unload_after" label="推理后释放显存（unload_after）" valuePropName="checked">
+                            <Switch />
+                          </Form.Item>
+                          <Form.Item name="unload_on_leave" label="离开页面释放显存（unload_on_leave）" valuePropName="checked">
                             <Switch />
                           </Form.Item>
                         </>

@@ -20,6 +20,53 @@ export default function IstSinglePage() {
   const [loading, setLoading] = useState(false);
   const language = Form.useWatch('language', form) ?? 'python';
 
+  // hydrate persisted state
+  useEffect(() => {
+    try {
+      const savedForm = localStorage.getItem('ist_single_form');
+      if (savedForm) form.setFieldsValue(JSON.parse(savedForm));
+      const savedInput = localStorage.getItem('ist_single_input');
+      if (savedInput) setInput(savedInput);
+      const savedPicked = localStorage.getItem('ist_single_picked');
+      if (savedPicked) setPicked(JSON.parse(savedPicked));
+      const savedManual = localStorage.getItem('ist_single_manual');
+      if (savedManual) setManual(JSON.parse(savedManual));
+    } catch {}
+    return () => {
+      try {
+        localStorage.setItem('ist_single_form', JSON.stringify(form.getFieldsValue()));
+        localStorage.setItem('ist_single_input', input);
+        localStorage.setItem('ist_single_picked', JSON.stringify(picked));
+        localStorage.setItem('ist_single_manual', JSON.stringify(manual));
+      } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onValuesChange = (_: any, all: any) => {
+    try {
+      localStorage.setItem('ist_single_form', JSON.stringify(all));
+    } catch {}
+  };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('ist_single_input', input);
+    } catch {}
+  }, [input]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('ist_single_picked', JSON.stringify(picked));
+    } catch {}
+  }, [picked]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('ist_single_manual', JSON.stringify(manual));
+    } catch {}
+  }, [manual]);
+
   useEffect(() => {
     (async () => {
       try {
@@ -83,7 +130,7 @@ export default function IstSinglePage() {
       <Card title="IST · 单一风格转换">
         {/* 顶部控制条 */}
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-          <Form form={form} layout="inline" initialValues={{ language: 'python' }}>
+          <Form form={form} layout="inline" initialValues={{ language: 'python' }} onValuesChange={onValuesChange}>
             <Form.Item name="language" label="语言" rules={[{ required: true }]}>
               <Select style={{ width: 180 }} options={LANGS.map((l) => ({ label: l, value: l }))} />
             </Form.Item>
