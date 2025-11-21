@@ -68,6 +68,11 @@ class TransformDatasetReq(BaseModel):
     output_path: str
     language: str
     code_field: str
+    # Humaneval-style: optionally combine prompt+code for transform, then split back
+    combine_fields: bool = False
+    prompt_field: Optional[str] = None
+    output_prompt_field: Optional[str] = None
+    output_code_field: Optional[str] = None
     id_field: Optional[str] = None
     backup_field: Optional[str] = None
     strategy: str = "fixed"  # fixed | random
@@ -381,6 +386,23 @@ def transform_dataset(req: TransformDatasetReq) -> TransformDatasetResp:
     rng = random.Random(req.seed)
     st = StyleTransfer(req.language)
 
+    def _comment_prefix(lang: str) -> str:
+        m = {
+            "python": "#",
+            "py": "#",
+            "javascript": "//",
+            "js": "//",
+            "java": "//",
+            "c": "//",
+            "cpp": "//",
+            "c++": "//",
+            "c_sharp": "//",
+            "csharp": "//",
+            "go": "//",
+            "php": "//",
+        }
+        return m.get(lang.lower(), "#")
+
     total = 0
     changed = 0
     success = 0
@@ -391,8 +413,17 @@ def transform_dataset(req: TransformDatasetReq) -> TransformDatasetResp:
     for idx, obj in enumerate(rows):
         total += 1
         code_val = obj.get(req.code_field, "")
-        if not isinstance(code_val, str) or not code_val.strip():
-            run_log.append({"index": idx, "status": "skipped", "reason": "missing_or_invalid_code"})
+        prompt_val = None
+        if req.combine_fields:
+            pf = req.prompt_field.strip() if isinstance(req.prompt_field, str) else "prompt"
+            prompt_val = obj.get(pf, "")
+            if not isinstance(prompt_val, str):
+                prompt_val = ""
+        if not isinstance(code_val, str):
+            code_val = ""
+        if (not code_val.strip()) and (not (req.combine_fields and isinstance(prompt_val, str) and prompt_val.strip())):
+            run_log.append({"index": idx, "status": "skipped", "reason": "missing_or_invalid_code_and_prompt"})
+            out_rows.append(obj)
             continue
 
         # decide styles
@@ -412,7 +443,19 @@ def transform_dataset(req: TransformDatasetReq) -> TransformDatasetResp:
                 req.poison_candidates,
             )
 
+        # Apply transform
+        combined_mode = bool(req.combine_fields)
         current = code_val
+        combined_before = None
+        pfx = _comment_prefix(req.language)
+        P_START = f"{pfx} CCD_PROMPT_START"
+        P_END = f"{pfx} CCD_PROMPT_END"
+        C_START = f"{pfx} CCD_CODE_START"
+        C_END = f"{pfx} CCD_CODE_END"
+        if combined_mode:
+            prompt_text = prompt_val or ""
+            combined_before = f"{P_START}\n{prompt_text}\n{P_END}\n{C_START}\n{code_val}\n{C_END}\n"
+            current = combined_before
         applied: List[str] = []
         ok_any = False
         for s in styles_to_apply:
@@ -426,9 +469,54 @@ def transform_dataset(req: TransformDatasetReq) -> TransformDatasetResp:
                 pass
 
         out_obj = dict(obj)
-        if req.backup_field:
-            out_obj[req.backup_field] = code_val
-        out_obj[req.code_field] = current
+        if not combined_mode:
+            if req.backup_field:
+                out_obj[req.backup_field] = code_val
+            out_obj[req.code_field] = current
+        else:
+            # Split back by markers; if markers lost, fall back to original fields
+            out_prompt = prompt_val or ""
+            out_code = code_val
+            try:
+                def _extract_between(text: str, start_marker: str, end_marker: str) -> Optional[str]:
+                    si = text.find(start_marker)
+                    if si < 0:
+                        return None
+                    si += len(start_marker)
+                    ei = text.find(end_marker, si)
+                    if ei < 0:
+                        return None
+                    # trim single leading newline if present
+                    segment = text[si:ei]
+                    if segment.startswith("\n"):
+                        segment = segment[1:]
+                    if segment.endswith("\n"):
+                        segment = segment[:-1]
+                    return segment
+
+                extr_prompt = _extract_between(current, P_START, P_END)
+                extr_code = _extract_between(current, C_START, C_END)
+                if isinstance(extr_prompt, str):
+                    out_prompt = extr_prompt
+                if isinstance(extr_code, str):
+                    out_code = extr_code
+            except Exception:
+                pass
+            # write outputs
+            dst_prompt_field = (
+                req.output_prompt_field.strip()
+                if isinstance(req.output_prompt_field, str) and req.output_prompt_field.strip()
+                else (req.prompt_field if isinstance(req.prompt_field, str) and req.prompt_field.strip() else "prompt")
+            )
+            dst_code_field = (
+                req.output_code_field.strip()
+                if isinstance(req.output_code_field, str) and req.output_code_field.strip()
+                else req.code_field
+            )
+            if req.backup_field:
+                out_obj[req.backup_field] = code_val
+            out_obj[dst_prompt_field] = out_prompt
+            out_obj[dst_code_field] = out_code
         out_obj.setdefault("ist", {})
         syntax_ok = True
         if req.syntax_check:
@@ -446,12 +534,17 @@ def transform_dataset(req: TransformDatasetReq) -> TransformDatasetResp:
                 "success": ok_any,
                 "syntax_checked": req.syntax_check,
                 "syntax_ok": syntax_ok,
+                "combined": combined_mode,
             }
         )
         if ok_any:
             success += 1
-        if current != code_val:
-            changed += 1
+        if not combined_mode:
+            if current != code_val:
+                changed += 1
+        else:
+            if combined_before is not None and current != combined_before:
+                changed += 1
         out_rows.append(out_obj)
         if idx < 20:
             run_log.append(
@@ -459,9 +552,10 @@ def transform_dataset(req: TransformDatasetReq) -> TransformDatasetResp:
                     "index": idx,
                     "status": "ok" if ok_any else "no-change",
                     "applied_styles": applied,
-                    "changed": current != code_val,
+                    "changed": (current != code_val) if not combined_mode else (combined_before is not None and current != combined_before),
                     "syntax_checked": req.syntax_check,
                     "syntax_ok": syntax_ok,
+                    "combined": combined_mode,
                 }
             )
 

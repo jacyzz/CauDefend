@@ -18,6 +18,7 @@ export default function IstDatasetPage() {
   const [log, setLog] = useState<any[]>([]);
   const [summary, setSummary] = useState<{ total: number; changed: number; success: number; output_path: string }>();
   const useRandom: boolean = (Form.useWatch('use_random', form) as boolean) ?? false;
+  const useCombine: boolean = (Form.useWatch('combine_fields', form) as boolean) ?? false;
 
   useEffect(() => {
     // hydrate persisted
@@ -72,6 +73,10 @@ export default function IstDatasetPage() {
         output_path: v.output_path,
         language: v.language,
         code_field: v.code_field,
+        combine_fields: !!v.combine_fields,
+        prompt_field: v.prompt_field || undefined,
+        output_prompt_field: v.output_prompt_field || undefined,
+        output_code_field: v.output_code_field || undefined,
         id_field: v.id_field || undefined,
         backup_field: v.backup_field || undefined,
         strategy: useRandom ? 'random' : 'fixed',
@@ -139,6 +144,33 @@ export default function IstDatasetPage() {
                 <Input placeholder="可选，如 original_code" />
               </Form.Item>
             </Col>
+          </Row>
+
+          <Row gutter={16}>
+            <Col span={24}>
+              <Form.Item name="combine_fields" label="合并转换 prompt+代码（Humaneval 投毒）" valuePropName="checked" tooltip="先将 prompt 与 code 合并后统一风格转换，再拆分回各自字段">
+                <Switch />
+              </Form.Item>
+            </Col>
+            {useCombine && (
+              <>
+                <Col span={6}>
+                  <Form.Item name="prompt_field" label="prompt 字段名" initialValue="prompt">
+                    <Input />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item name="output_prompt_field" label="输出 prompt 字段名" tooltip="留空则写回到 prompt 字段">
+                    <Input placeholder="默认：prompt_field" />
+                  </Form.Item>
+                </Col>
+                <Col span={6}>
+                  <Form.Item name="output_code_field" label="输出代码字段名" tooltip="留空则写回到 写回字段">
+                    <Input placeholder="默认：code_field" />
+                  </Form.Item>
+                </Col>
+              </>
+            )}
           </Row>
 
           <Divider />

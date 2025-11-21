@@ -42,6 +42,10 @@ export type TransformDatasetReq = {
   output_path: string;
   language: string;
   code_field: string;
+  combine_fields?: boolean;
+  prompt_field?: string;
+  output_prompt_field?: string;
+  output_code_field?: string;
   id_field?: string;
   backup_field?: string;
   strategy: 'fixed' | 'random';
@@ -52,6 +56,7 @@ export type TransformDatasetReq = {
   avoid_similar?: boolean;
   limit?: number;
   seed?: number;
+  syntax_check?: boolean;
 };
 
 export type TransformDatasetResp = {
