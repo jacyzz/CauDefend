@@ -96,11 +96,12 @@ def load_model_and_tokenizer(cfg: ModelConfig):
     torch_dtype = _torch_dtype_from_str(cfg.dtype)
     model_kwargs: Dict[str, Any] = dict(
         device_map=cfg.device_map,
-        torch_dtype=torch_dtype,
+        dtype=torch_dtype,
         trust_remote_code=cfg.trust_remote_code,
         low_cpu_mem_usage=cfg.low_cpu_mem_usage,
         use_safetensors=cfg.use_safetensors,
-        use_cache=False,
+        # Enable KV cache to speed up generation, especially for long outputs
+        use_cache=True,
     )
 
     # Explicit base+adapter has highest priority
@@ -175,8 +176,17 @@ def build_prompt(input_text: str, system_prompt: str) -> str:
 
 def extract_response(full_text: str) -> str:
     key = "### Response:"
-    left = full_text.rfind(key)
-    content = full_text[left + len(key):].strip() if left >= 0 else full_text.strip()
+    # Prefer FIRST response block; models sometimes repeat the header multiple times
+    first = full_text.find(key)
+    if first < 0:
+        content = full_text.strip()
+    else:
+        tail = full_text[first + len(key):]
+        # If there is a second "### Response:", cut before it
+        second = tail.find(key)
+        if second >= 0:
+            tail = tail[:second]
+        content = tail.strip()
 
     # Strip code fences if any
     if content.startswith("```"):

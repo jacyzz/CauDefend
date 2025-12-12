@@ -73,6 +73,25 @@ export async function transformDataset(body: TransformDatasetReq) {
   return data;
 }
 
+// Async transform with progress polling
+export async function transformDatasetAsync(body: TransformDatasetReq) {
+  const { data } = await http.post<{ task_id: string; total: number; status: string }>('/ist/transform_dataset_async', body);
+  return data;
+}
+
+export async function fetchTransformProgress(task_id: string) {
+  const { data } = await http.get('/ist/progress', { params: { task_id } });
+  return data as {
+    task_id: string;
+    status: 'running' | 'done' | 'error';
+    current: number;
+    total: number;
+    percent: number;
+    error?: string;
+    result?: TransformDatasetResp;
+  };
+}
+
 export async function fetchDatasetSchema(path: string, preview = 5) {
   const { data } = await http.get<{ path: string; count_preview: number; fields: string[]; preview: any[] }>(
     '/ist/dataset_schema',

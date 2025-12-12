@@ -2,7 +2,8 @@ import axios from 'axios';
 
 export const http = axios.create({
   baseURL: '/api',
-  timeout: 60_000,
+  // Long-running inference can exceed 60s; 0 disables Axios timeout
+  timeout: 0,
 });
 
 http.interceptors.response.use(

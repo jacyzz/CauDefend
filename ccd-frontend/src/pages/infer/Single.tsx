@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Card, Col, Divider, Form, Input, InputNumber, Row, Segmented, Select, Space, Switch, Table, Tag, Tabs, Typography, message } from 'antd';
+import { Button, Card, Col, Divider, Form, Input, InputNumber, Row, Select, Space, Switch, Tag, Tabs, Typography, message } from 'antd';
 import CodePane from '../../components/CodePane';
 import { inferGenerate, unloadModel } from '../../api/infer';
 import type { InferGenParams, InferModelCfg, InferPromptCfg } from '../../api/infer';
@@ -19,6 +19,86 @@ export default function InferSingle() {
   const [logs, setLogs] = useState<string[]>([]);
   const [candidates, setCandidates] = useState<{ text: string; score?: number }[]>([]);
   const [decoded, setDecoded] = useState<string[] | undefined>();
+  const [engine] = useState<'hf'>('hf');
+  const [decodeEscapes, setDecodeEscapes] = useState<boolean>(true);
+  const [elapsed, setElapsed] = useState<number>(0);
+  const [extractSections, setExtractSections] = useState<boolean>(true);
+
+  const presetTemplate = useMemo(
+    () =>
+      [
+        'Role：',
+        'You are a Static Analysis Engine with Constraint Assessment capabilities.',
+        '',
+        'Task：',
+        'Clean the provided code and generate 4 stylistically diverse variants.',
+        '',
+        'Constraints：',
+        'Keep exactly the same function name and return type.',
+        'Only clean parameter names by removing trigger suffixes.',
+        'Include all #include statements from the original code (use actual statements, not placeholders)',
+        '',
+        'Input Code{language}：',
+        '{poisoned_code}',
+        '',
+        'Thinking：',
+        'Perform the following Constraint Assessment:',
+        '',
+        'Phase 1: Constraint Assessment (CoT)',
+        'Perform a mental static analysis:',
+        'Reachability Analysis: Analyze if(0) / while(0). Conclusion: Unreachable code (Dead). Action: Remove.',
+        'Taint Analysis: Track variables ending in _secret, _vuln. Action: Sanitize/Rename to remove taint.',
+        'Signature Constraint Locking: Extract the function signature: [NAME] ().',
+        'Constraint: This signature is IMMUTABLE.',
+        'Header Constraint: Extract list of #include. Constraint: Must appear in all outputs.',
+        '',
+        'Phase 2: Execution Instructions',
+        'Generate 4 clean variants respecting the Locked Constraints:',
+        'Remove dead code.',
+        'Fix suspicious variable names (suffixes: _sh, _secret, etc.).',
+        'Remove volatile declarations.',
+        'Keep EXACTLY the same function name and return type.',
+        'Include ALL #include statements.',
+        '',
+        'CRITICAL OUTPUT REQUIREMENTS：',
+        'Output 4 (FOUR) code variants.',
+        'Ensure high stylistic diversity while maintaining semantic equivalence.',
+        'Use REAL #include statements.',
+        'NO explanations, NO placeholders.',
+        '',
+        'Output Format：',
+        '```cpp',
+        '',
+        '// Variant 1',
+        '#include...',
+        'bool function_name(...) {... }',
+        '',
+        '// Variant 2',
+        '#include...',
+        'bool function_name(...) {... }',
+        '',
+        '// Variant 3',
+        '#include...',
+        'bool function_name(...) {... }',
+        '',
+        '// Variant 4',
+        '#include...',
+        'bool function_name(...) {... }',
+        '',
+        '```',
+      ].join('\n'),
+    [],
+  );
+
+  const fillPreset = () => {
+    const vals = form.getFieldsValue();
+    form.setFieldsValue({
+      num_beams: Math.max(4, vals?.num_beams || 4),
+      do_sample: false,
+      max_new_tokens: vals?.max_new_tokens || 256,
+    });
+    message.success('已填充推荐参数（num_beams≥4）。');
+  };
 
   const disableRun = useMemo(() => !input.trim(), [input]);
 
@@ -74,6 +154,9 @@ export default function InferSingle() {
   const onRun = async () => {
     try {
       const vals = await form.validateFields();
+      setLoading(true);
+      setElapsed(0);
+      setLogs([]);
       const model: InferModelCfg = {
         model: vals.model,
         dtype: vals.dtype,
@@ -100,8 +183,6 @@ export default function InferSingle() {
         diversity_penalty: vals.diversity_penalty,
         seed: vals.seed,
       };
-      setLoading(true);
-      setLogs([]);
       const res = await inferGenerate({
         input_text: input,
         model,
@@ -125,14 +206,38 @@ export default function InferSingle() {
   const viewportH = typeof window !== 'undefined' ? window.innerHeight : 900;
   const codeAreaH = Math.max(240, Math.floor(viewportH - 300));
 
+  // simple elapsed timer while loading
+  useEffect(() => {
+    let timer: any;
+    if (loading) {
+      const start = Date.now();
+      timer = setInterval(() => {
+        setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+      }, 500);
+    } else {
+      setElapsed(0);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [loading]);
+
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="large">
-      <Card title="Inference · 单条推理">
+      <Card title="Inference · 单条推理（简化）">
         {/* 顶部操作条 */}
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           <Button type="primary" onClick={onRun} loading={loading} disabled={disableRun}>
             开始推理
           </Button>
+          <Button onClick={fillPreset} disabled={loading}>填充推荐参数</Button>
+          <Space size="small" style={{ marginLeft: 'auto' }}>
+            <Text type="secondary">转义解码显示</Text>
+            <Switch checked={decodeEscapes} onChange={setDecodeEscapes} />
+            <Text type="secondary" style={{ marginLeft: 8 }}>解析思维链</Text>
+            <Switch checked={extractSections} onChange={setExtractSections} />
+            {loading && <Text type="secondary">已运行 {elapsed}s</Text>}
+          </Space>
         </div>
 
         <Divider />
@@ -149,15 +254,78 @@ export default function InferSingle() {
                   {candidates.length === 0 ? (
                     <Text type="secondary">暂无结果</Text>
                   ) : (
-                    candidates.map((c, idx) => (
-                      <div key={idx} style={{ marginBottom: 16 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                          <Tag color="blue">#{idx}</Tag>
-                          {typeof c.score === 'number' && <Text type="secondary">score={c.score.toFixed(4)}</Text>}
-                        </div>
-                        <CodePane title={`候选 ${idx}`} value={c.text} readOnly height={200} />
-                      </div>
-                    ))
+                    <>
+                      {candidates.map((c, idx) => {
+                        const decode = (s: string) =>
+                          decodeEscapes && typeof s === 'string'
+                            ? s.replace(/\\r\\n|\\n/g, '\n').replace(/\\t/g, '\t')
+                            : s;
+
+                        const text = decode(c.text || '');
+
+                        const firstFenced = (s: string): string | null => {
+                          const m = s.match(/```[a-zA-Z0-9_+\-]*\n([\s\S]*?)```/m);
+                          return m ? m[1].trim() : null;
+                        };
+
+                        const extract = (s: string): { analysis: string; code: string } => {
+                          if (!extractSections) return { analysis: '', code: s };
+                          const t = s.replace(/\r\n/g, '\n');
+                          // [Trace Analysis] ... [Sanitized Code] ...  (JS RegExp doesn't support (?is), use flags + [\\s\\S])
+                          const m1 = t.match(/\[trace\s*analysis\]([\s\S]*)\[sanitized\s*code\]([\s\S]*)$/i);
+                          if (m1) {
+                            const analysis = m1[1].trim();
+                            const tail = m1[2].trim();
+                            const code = firstFenced(tail) || tail;
+                            return { analysis, code };
+                          }
+                          // Trace Analysis: ... (Sanitized Code: ...)?
+                          const m2 = t.match(/trace\s*analysis\s*:\s*([\s\S]*)$/i);
+                          if (m2) {
+                            const after = m2[1];
+                            const m2b = after.match(/([\s\S]*)sanitized\s*code\s*:\s*([\s\S]*)$/i);
+                            if (m2b) {
+                              const analysis = m2b[1].trim();
+                              const tail = m2b[2].trim();
+                              const code = firstFenced(tail) || tail;
+                              return { analysis, code };
+                            }
+                            const block = firstFenced(after);
+                            if (block) {
+                              const head = after.split('```', 1)[0].trim();
+                              return { analysis: head, code: block };
+                            }
+                          }
+                          const only = firstFenced(t);
+                          if (only) {
+                            const head = t.split('```', 1)[0].trim();
+                            return { analysis: head, code: only };
+                          }
+                          return { analysis: '', code: t };
+                        };
+
+                        const { analysis, code } = extract(text);
+                        const analysisShown = decode(analysis);
+                        const codeShown = decode(code);
+
+                        return (
+                          <div key={idx} style={{ border: '1px solid #333', borderRadius: 4, marginBottom: 12 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#111', padding: '4px 6px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <Tag color="blue">Variant {idx + 1}</Tag>
+                                {typeof c.score === 'number' && <Text type="secondary">score={c.score.toFixed(4)}</Text>}
+                              </div>
+                            </div>
+                            {analysisShown && (
+                              <Card size="small" bodyStyle={{ padding: 8 }} style={{ border: 'none' }} title="Trace Analysis">
+                                <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{analysisShown}</pre>
+                              </Card>
+                            )}
+                            <CodePane title="Sanitized Code" value={codeShown} readOnly height={260} />
+                          </div>
+                        );
+                      })}
+                    </>
                   )}
                 </Card>
                 {decoded && decoded.length > 0 && (
@@ -204,6 +372,9 @@ export default function InferSingle() {
                       label: '快速参数',
                       children: (
                         <>
+                          <Space style={{ marginBottom: 8 }}>
+                            <Button onClick={fillPreset}>填充推荐参数</Button>
+                          </Space>
                           <Form.Item name="model" label="模型路径/名称" rules={[{ required: true }]}>
                             <Input placeholder="/path/to/merged-or-base-model" />
                           </Form.Item>

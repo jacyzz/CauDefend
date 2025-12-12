@@ -7,4 +7,5 @@ transformers>=4.42.0
 peft>=0.11.1
 # torch is required at runtime; install a CUDA build suitable for your environment
 # torch>=2.1.0
+dspy-ai>=2.4.0
 

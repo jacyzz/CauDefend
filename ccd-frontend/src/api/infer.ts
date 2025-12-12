@@ -63,6 +63,12 @@ export type InferDatasetReq = {
   write_mode?: 'generation' | 'overwrite';
   limit?: number;
   unload_after?: boolean;
+  // optional: merge prompt+code into one input, then split output back
+  combine_fields?: boolean;
+  prompt_field?: string;
+  output_prompt_field?: string;
+  output_code_field?: string;
+  extract_code?: boolean;
 };
 
 export type InferDatasetResp = {
@@ -78,6 +84,51 @@ export async function inferDataset(body: InferDatasetReq) {
   return data;
 }
 
+// ---------- Config-driven structured dataset ----------
+export type InputBuilder = {
+  mode?: 'merge' | 'single';
+  field?: string;
+  fields?: string[];
+  separator?: string;
+  prefix?: string;
+  suffix?: string;
+  id_field?: string;
+};
+
+export type OutputSchema = {
+  mode?: 'structured_variants' | 'single_field';
+  field?: string;
+  emit_flat?: boolean;
+  preset?: 'humaneval_structured' | string;
+  trace_analysis?: string;
+  extract_sections?: boolean;
+};
+
+export type InferDatasetStructuredReq = {
+  input_path: string;
+  output_path: string;
+  input_builder?: InputBuilder;
+  output_schema?: OutputSchema;
+  model: InferModelCfg;
+  prompt?: InferPromptCfg;
+  gen?: InferGenParams;
+  limit?: number;
+  unload_after?: boolean;
+};
+
+export async function inferDatasetStructured(body: InferDatasetStructuredReq) {
+  const { data } = await http.post<InferDatasetResp>('/infer/dataset_structured', body);
+  return data;
+}
+
+export async function inspectJsonl(path: string, limit = 5) {
+  const { data } = await http.get<{ path: string; count_preview: number; fields: string[]; preview: any[] }>(
+    '/infer/inspect_jsonl',
+    { params: { path, limit } },
+  );
+  return data;
+}
+
 export async function unloadModel(body: { model: InferModelCfg }): Promise<{ ok: boolean }> {
   const { data } = await http.post<{ ok: boolean }>('/infer/unload', body);
   return data;
@@ -85,6 +136,78 @@ export async function unloadModel(body: { model: InferModelCfg }): Promise<{ ok:
 
 export async function unloadAll(): Promise<{ ok: boolean; cleared: boolean; remaining: number }> {
   const { data } = await http.post<{ ok: boolean; cleared: boolean; remaining: number }>('/infer/unload_all', {});
+  return data;
+}
+
+// ---------- DSPy endpoints ----------
+export type DSpyModelCfg = {
+  model: string;
+  dtype?: 'float16' | 'bfloat16' | 'auto';
+  device_map?: string;
+};
+
+export type DSpyGenParams = {
+  max_new_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  do_sample?: boolean;
+  n?: number;
+  num_beams?: number;
+  early_stopping?: boolean;
+};
+
+export type DSpyTextReq = {
+  input_text: string;
+  signature_mode?: 'completion' | 'defense' | 'custom' | 'freeform';
+  model: DSpyModelCfg;
+  gen?: DSpyGenParams;
+  unload_after?: boolean;
+  custom_prompt_text?: string;
+  custom_vars?: Record<string, any>;
+  extract_code?: boolean;
+};
+
+export type DSpyTextResp = {
+  candidates: string[];
+  analyses?: string[];
+  elapsed_ms: number;
+};
+
+export async function dspyGenerate(body: DSpyTextReq) {
+  const { data } = await http.post<DSpyTextResp>('/dspy/generate', body);
+  return data;
+}
+
+export type DSpyDatasetReq = {
+  input_path: string;
+  output_path: string;
+  field: string;
+  signature_mode?: 'completion' | 'defense' | 'custom' | 'freeform';
+  model: DSpyModelCfg;
+  gen?: DSpyGenParams;
+  emit_flat?: boolean;
+  write_mode?: 'generation' | 'overwrite';
+  output_field?: string;
+  limit?: number;
+  unload_after?: boolean;
+  custom_prompt_text?: string;
+  custom_vars?: Record<string, any>;
+  extract_code?: boolean;
+  combine_fields?: boolean;
+  prompt_field?: string;
+  output_prompt_field?: string;
+  output_code_field?: string;
+};
+
+export type DSpyDatasetResp = {
+  total: number;
+  output_path: string;
+  elapsed_ms: number;
+  preview: any[];
+};
+
+export async function dspyDataset(body: DSpyDatasetReq) {
+  const { data } = await http.post<DSpyDatasetResp>('/dspy/dataset', body);
   return data;
 }
 

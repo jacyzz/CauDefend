@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Button, Card, Col, Divider, Form, Input, Row, Select, Space, Switch, Table, Typography, message } from 'antd';
-import { fetchStyles, transformDataset } from '../../api/ist';
+import { Button, Card, Col, Divider, Form, Input, Row, Select, Space, Switch, Table, Typography, message, Progress } from 'antd';
+import { fetchStyles, transformDataset, transformDatasetAsync, fetchTransformProgress } from '../../api/ist';
 import type { StyleItem } from '../../api/ist';
 import StylePicker from '../../components/StylePicker';
 
@@ -17,6 +17,10 @@ export default function IstDatasetPage() {
   const [preview, setPreview] = useState<any[]>([]);
   const [log, setLog] = useState<any[]>([]);
   const [summary, setSummary] = useState<{ total: number; changed: number; success: number; output_path: string }>();
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [percent, setPercent] = useState<number>(0);
+  const [status, setStatus] = useState<'normal' | 'active' | 'success' | 'exception'>('normal');
+  const [polling, setPolling] = useState<any>(null);
   const useRandom: boolean = (Form.useWatch('use_random', form) as boolean) ?? false;
   const useCombine: boolean = (Form.useWatch('combine_fields', form) as boolean) ?? false;
 
@@ -97,6 +101,90 @@ export default function IstDatasetPage() {
     } catch (e: any) {
       message.error(e.message ?? '执行失败');
     } finally {
+      setLoading(false);
+    }
+  };
+
+  const onRunAsync = async () => {
+    try {
+      const v = await form.validateFields();
+      if (!useRandom && selected.length === 0) {
+        message.warning('请选择要应用的固定风格');
+        return;
+      }
+      if (useRandom && pool.length === 0) {
+        message.warning('请先选择随机采样的风格池');
+        return;
+      }
+      setLoading(true);
+      setPercent(0);
+      setStatus('active');
+      setSummary(undefined);
+      setPreview([]);
+      setLog([]);
+      const body: any = {
+        input_path: v.input_path,
+        output_path: v.output_path,
+        language: v.language,
+        code_field: v.code_field,
+        combine_fields: !!v.combine_fields,
+        prompt_field: v.prompt_field || undefined,
+        output_prompt_field: v.output_prompt_field || undefined,
+        output_code_field: v.output_code_field || undefined,
+        id_field: v.id_field || undefined,
+        backup_field: v.backup_field || undefined,
+        strategy: useRandom ? 'random' : 'fixed',
+        styles: useRandom ? undefined : selected,
+        poison_min: useRandom ? v.poison_min : undefined,
+        poison_max: useRandom ? v.poison_max : undefined,
+        avoid_similar: useRandom ? (v.avoid_similar ?? true) : undefined,
+        poison_candidates: useRandom ? pool : undefined,
+        limit: Number(v.limit || 0),
+        seed: v.seed ? Number(v.seed) : undefined,
+        syntax_check: !!v.syntax_check,
+      };
+      const start = await transformDatasetAsync(body);
+      setTaskId(start.task_id);
+      setPercent(0);
+      setStatus('active');
+      const t = setInterval(async () => {
+        try {
+          const p = await fetchTransformProgress(start.task_id);
+          setPercent(Math.max(0, Math.min(100, p.percent)));
+          if (p.status === 'done' && p.result) {
+            setStatus('success');
+            setSummary({
+              total: p.result.total,
+              changed: p.result.changed,
+              success: p.result.success,
+              output_path: p.result.output_path,
+            });
+            setPreview(p.result.preview || []);
+            setLog(p.result.log || []);
+            clearInterval(t);
+            setPolling(null);
+            setTaskId(null);
+            setLoading(false);
+          } else if (p.status === 'error') {
+            setStatus('exception');
+            message.error(p.error || '处理失败');
+            clearInterval(t);
+            setPolling(null);
+            setTaskId(null);
+            setLoading(false);
+          }
+        } catch (e: any) {
+          setStatus('exception');
+          message.error(e.message ?? '进度查询失败');
+          clearInterval(t);
+          setPolling(null);
+          setTaskId(null);
+          setLoading(false);
+        }
+      }, 1000);
+      setPolling(t);
+    } catch (e: any) {
+      message.error(e.message ?? '执行失败');
       setLoading(false);
     }
   };
@@ -230,6 +318,14 @@ export default function IstDatasetPage() {
               <Button type="primary" onClick={onRun} loading={loading}>
                 开始转换
               </Button>
+              <Button onClick={onRunAsync} disabled={loading}>
+                异步转换（显示进度）
+              </Button>
+              {taskId && (
+                <div style={{ minWidth: 280 }}>
+                  <Progress percent={Math.round(percent)} status={status} />
+                </div>
+              )}
               {summary && (
                 <span>
                   total: {summary.total} · changed: {summary.changed} · success: {summary.success}
