@@ -4,7 +4,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import math
 import gc
 import threading
@@ -12,7 +12,6 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 import torch
 
 from ccd.ist.transfer import StyleTransfer
@@ -27,12 +26,29 @@ from ccd.inference.engine import (
     build_prompt as eng_build_prompt,
     softmax_scores as eng_softmax,
 )
+from ccd.inference.processors import (
+    MergeFieldsBuilder,
+    make_parser,
+    make_composer,
+)
 from ccd.inference.dspy_infer import (
     DSPyModelConfig as _DSPyModelConfig,
     DSPyGenConfig as _DSPyGenConfig,
     predict_single as _dspy_predict_single,
     predict_dataset as _dspy_predict_dataset,
     unload_lm as _dspy_unload,
+)
+from ccd.server.api_async import router as async_router
+from ccd.server.schema import (
+    TransformTextReq, TransformTextResp,
+    TransformDatasetReq, TransformDatasetResp,
+    TransformDatasetAsyncResp, ISTProgressResp,
+    InferTextReq, InferTextResp,
+    InferDatasetReq, InferDatasetResp,
+    InferDatasetStructuredReq, InferUnloadReq,
+    DSpyTextReq, DSpyTextResp,
+    DSpyDatasetReq, DSpyDatasetResp,
+    InferModelCfg,
 )
 
 # optional tqdm for progress in dataset inference
@@ -53,191 +69,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-class TransformTextReq(BaseModel):
-    language: str = Field(..., description="e.g. 'python','java','c','cpp','javascript','go','php'")
-    code: str
-    strategy: str = Field("fixed", description="'fixed' | 'random'")
-    styles: Optional[List[str]] = None
-    poison_min: int = 2
-    poison_max: int = 3
-    avoid_similar: bool = True
-    seed: Optional[int] = None
-
-
-class TransformTextResp(BaseModel):
-    converted_code: str
-    applied_styles: List[str]
-    syntax_ok: bool
-    processing_time_ms: int
-    log: List[str] = []
-
-
-class TransformDatasetReq(BaseModel):
-    input_path: str
-    output_path: str
-    language: str
-    code_field: str
-    # Humaneval-style: optionally combine prompt+code for transform, then split back
-    combine_fields: bool = False
-    prompt_field: Optional[str] = None
-    output_prompt_field: Optional[str] = None
-    output_code_field: Optional[str] = None
-    id_field: Optional[str] = None
-    backup_field: Optional[str] = None
-    strategy: str = "fixed"  # fixed | random
-    styles: Optional[List[str]] = None
-    # 可选：用于随机策略的候选风格池
-    poison_candidates: Optional[List[str]] = None
-    poison_min: int = 2
-    poison_max: int = 3
-    avoid_similar: bool = True
-    limit: int = 0
-    seed: Optional[int] = None
-    syntax_check: bool = False
-
-
-class TransformDatasetResp(BaseModel):
-    total: int
-    changed: int
-    success: int
-    output_path: str
-    preview: List[Dict[str, Any]] = []
-    log: List[Dict[str, Any]] = []
-
-# --------- IST async progress tracking ---------
-_IST_TASKS: Dict[str, Dict[str, Any]] = {}
-_IST_TASKS_LOCK = threading.Lock()
-
-class TransformDatasetAsyncResp(BaseModel):
-    task_id: str
-    total: int
-    status: str = "started"
-
-class ISTProgressResp(BaseModel):
-    task_id: str
-    status: str
-    current: int
-    total: int
-    percent: float
-    error: Optional[str] = None
-    result: Optional[TransformDatasetResp] = None
-
-# -------- Inference (HF beam-search) --------
-
-class InferModelCfg(BaseModel):
-    model: str
-    dtype: str = "float16"  # "float16" | "bfloat16" | "auto"
-    device_map: str = "auto"
-    trust_remote_code: bool = False
-    low_cpu_mem_usage: bool = False
-    use_safetensors: bool = False
-    base_model: Optional[str] = None
-    peft_adapter: Optional[str] = None
-    peft_merge: bool = False
-
-
-class InferPromptCfg(BaseModel):
-    template_yaml: Optional[str] = None
-    system_prompt_text: Optional[str] = None
-
-
-class InferGenParams(BaseModel):
-    max_new_tokens: int = 512
-    do_sample: bool = False
-    temperature: float = 1.0
-    top_p: float = 1.0
-    num_beams: int = 1
-    num_return_sequences: int = 1
-    num_beam_groups: int = 1
-    diversity_penalty: float = 0.0
-    seed: int = 123456
-
-
-class InferTextReq(BaseModel):
-    input_text: str
-    model: InferModelCfg
-    prompt: InferPromptCfg = InferPromptCfg()
-    gen: InferGenParams = InferGenParams()
-    return_decoded: bool = False
-    unload_after: bool = False
-
-
-class InferTextResp(BaseModel):
-    candidates: List[str]
-    scores: Optional[List[float]] = None
-    elapsed_ms: int
-    log: List[str] = []
-    decoded: Optional[List[str]] = None
-
-
-class InferDatasetReq(BaseModel):
-    input_path: str
-    output_path: str
-    field: str
-    # When write_mode == "generation", write candidates into this field instead of hardcoded "generation"
-    output_field: Optional[str] = None
-    model: InferModelCfg
-    prompt: InferPromptCfg = InferPromptCfg()
-    gen: InferGenParams = InferGenParams()
-    emit_flat: bool = True
-    write_mode: str = Field("generation", description="'generation' | 'overwrite'")
-    limit: int = 0
-    # Progress options (printed on server console; frontend remains unchanged)
-    progress: bool = True
-    progress_every: int = 10
-    unload_after: bool = False
-    # Optional: merge prompt + code for input; then split model output back
-    combine_fields: bool = False
-    prompt_field: Optional[str] = None
-    output_prompt_field: Optional[str] = None
-    output_code_field: Optional[str] = None
-    extract_code: bool = False
-
-
-class InferDatasetResp(BaseModel):
-    total: int
-    output_path: str
-    preview: List[Dict[str, Any]] = []
-    elapsed_ms: int
-    log: List[str] = []
-
-# ----- New structured dataset API models -----
-
-class InputBuilder(BaseModel):
-    mode: str = Field("merge", description="'merge' | 'single'")
-    # when mode=single
-    field: Optional[str] = None
-    # when mode=merge
-    fields: Optional[List[str]] = None  # default to ['declaration','canonical_solution'] if None
-    separator: str = "\n\n"
-    prefix: str = ""
-    suffix: str = ""
-    id_field: str = "task_id"
-
-
-class OutputSchema(BaseModel):
-    mode: str = Field("structured_variants", description="'structured_variants' | 'single_field'")
-    field: str = "output"  # for structured_variants, array field name; for single_field, target field
-    emit_flat: bool = False
-    preset: str = "humaneval_structured"  # current preset
-    trace_analysis: str = ""  # constant value per variant
-    extract_sections: bool = True  # try to parse [Trace Analysis] and [Sanitized Code]
-
-
-class InferDatasetStructuredReq(BaseModel):
-    input_path: str
-    output_path: str
-    input_builder: InputBuilder = InputBuilder()
-    output_schema: OutputSchema = OutputSchema()
-    model: InferModelCfg
-    prompt: InferPromptCfg = InferPromptCfg()
-    gen: InferGenParams = InferGenParams()
-    limit: int = 0
-    unload_after: bool = False
-
+app.include_router(async_router)
 
 _MODEL_CACHE: Dict[str, Any] = {}
+# IST async progress tracking (legacy; not used by new async router)
+_IST_TASKS: Dict[str, Dict[str, Any]] = {}
+_IST_TASKS_LOCK = threading.Lock()
 
 def _model_cache_key(cfg: InferModelCfg) -> str:
     key = {
@@ -904,6 +741,9 @@ def infer_generate(req: InferTextReq) -> InferTextResp:
     )
     t0 = time.time()
     responses, weights, decoded = generate_for_text(model, tok, req.input_text, pr_cfg, gen_cfg)
+    # Optional: parse analysis/code for single inference to align with dataset behavior
+    parser = make_parser(mode="cot", default_analysis="")
+    structured = [parser.parse(r) for r in responses]
     ms = int((time.time() - t0) * 1000)
     # Sanitize weights for JSON (avoid NaN/Inf causing no-response serialization errors)
     safe_weights: Optional[List[float]] = None
@@ -936,6 +776,7 @@ def infer_generate(req: InferTextReq) -> InferTextResp:
             f"unload_after={req.unload_after}",
         ],
         decoded=decoded if req.return_decoded else None,
+        structured_candidates=structured,
     )
 
 
@@ -1142,118 +983,36 @@ def infer_dataset_structured(req: InferDatasetStructuredReq) -> InferDatasetResp
     rows = _read_jsonl(Path(req.input_path), limit=req.limit or 0)
     out_rows: List[Dict[str, Any]] = []
     t0 = time.time()
-    # defaults for merge
-    default_fields = ["declaration", "canonical_solution"]
 
-    import re
-
-    def _first_fenced_code_block(s: str) -> Optional[str]:
-        m = re.search(r"```[a-zA-Z0-9_+-]*\n([\s\S]*?)```", s, re.MULTILINE)
-        if m:
-            return m.group(1).strip()
-        return None
-
-    def _extract_analysis_code(txt: str) -> Tuple[str, str]:
-        """
-        Try to split model output into analysis and code.
-        Supported markers:
-          - [Trace Analysis] ... [Sanitized Code] ... (preferred)
-          - 'Trace Analysis:' heading, optional 'Sanitized Code:' heading
-          - fenced code block: take preceding text as analysis
-        Fallback: analysis='', code=txt
-        """
-        t = txt.strip()
-        # Normalize windows line endings
-        t = t.replace("\r\n", "\n")
-        # 1) [Trace Analysis] ... [Sanitized Code]
-        m1 = re.search(r"(?is)\[trace\s*analysis\](.*)\[sanitized\s*code\](.*)$", t)
-        if m1:
-            analysis = m1.group(1).strip()
-            tail = m1.group(2).strip()
-            code = _first_fenced_code_block(tail) or tail
-            return analysis, code
-        # 2) 'Trace Analysis:' and then fenced code or 'Sanitized Code:'
-        m2 = re.search(r"(?is)trace\s*analysis\s*:\s*(.*)$", t)
-        if m2:
-            after = m2.group(1)
-            # Prefer explicit 'Sanitized Code:' split
-            m2b = re.search(r"(?is)(.*)sanitized\s*code\s*:\s*(.*)$", after)
-            if m2b:
-                analysis = m2b.group(1).strip()
-                tail = m2b.group(2).strip()
-                code = _first_fenced_code_block(tail) or tail
-                return analysis, code
-            # Else use first fenced code block
-            code_block = _first_fenced_code_block(after)
-            if code_block is not None:
-                # analysis = text before block
-                head = after.split("```", 1)[0].strip()
-                return head, code_block
-        # 3) Only fenced code block
-        only = _first_fenced_code_block(t)
-        if only is not None:
-            head = t.split("```", 1)[0].strip()
-            return head, only
-        # 4) Fallback
-        return "", t
+    # Builders/parsers/composers
+    ib_cfg = req.input_builder
+    if ib_cfg.mode == "single":
+        fields = [ib_cfg.field] if ib_cfg.field else []
+    else:
+        fields = ib_cfg.fields if (isinstance(ib_cfg.fields, list) and len(ib_cfg.fields) > 0) else ["declaration", "canonical_solution"]
+    input_builder = MergeFieldsBuilder(
+        fields=fields,
+        separator=ib_cfg.separator or "\n\n",
+        prefix=ib_cfg.prefix or "",
+        suffix=ib_cfg.suffix or "",
+    )
+    parser = make_parser(mode="cot" if req.output_schema.extract_sections else "raw", default_analysis=req.output_schema.trace_analysis)
+    composer = make_composer(mode=req.output_schema.mode, field=req.output_schema.field, emit_flat=req.output_schema.emit_flat)
 
     for obj in rows:
-        # Build input
-        ib = req.input_builder
-        if ib.mode == "single":
-            fld = (ib.field or "").strip()
-            src = str(obj.get(fld, "") or "")
-            if not src.strip():
-                continue
-            input_text = src
-        else:
-            fields = ib.fields if (isinstance(ib.fields, list) and len(ib.fields) > 0) else default_fields
-            parts: List[str] = []
-            for f in fields:
-                val = obj.get(f, None)
-                if isinstance(val, str) and val.strip():
-                    parts.append(val.strip())
-            if not parts:
-                continue
-            input_text = ib.separator.join(parts)
-        if ib.prefix:
-            input_text = f"{ib.prefix}{input_text}"
-        if ib.suffix:
-            input_text = f"{input_text}{ib.suffix}"
-
-        # Generate
-        responses, weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
-
-        # Compose output
-        osch = req.output_schema
-        if osch.mode == "single_field":
-            out_obj = dict(obj)
-            out_obj[osch.field] = responses if osch.emit_flat else (responses[0] if responses else "")
-            out_rows.append(out_obj)
+        input_text = input_builder.build(obj)
+        if not input_text:
             continue
 
-        # structured_variants preset: humaneval_structured
-        variants: List[Dict[str, Any]] = []
-        for i, resp in enumerate(responses, start=1):
-            if osch.extract_sections:
-                analysis, code_part = _extract_analysis_code(resp)
-                trace_text = analysis if analysis.strip() else osch.trace_analysis
-                variants.append(
-                    {"variant": i, "trace_analysis": trace_text, "sanitized_code": code_part}
-                )
-            else:
-                variants.append(
-                    {"variant": i, "trace_analysis": osch.trace_analysis, "sanitized_code": resp}
-                )
-        out_obj: Dict[str, Any] = {
-            "task_id": obj.get(ib.id_field, None),
-            "canonical_solution": obj.get("canonical_solution", None),
-            osch.field: variants,
-        }
-        # Include declaration only if present
-        decl_val = obj.get("declaration", None)
-        if isinstance(decl_val, str) and decl_val.strip():
-            out_obj["declaration"] = decl_val
+        responses, weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
+
+        parsed_candidates = [parser.parse(r) for r in responses]
+        out_obj = composer.compose(obj, parsed_candidates)
+        # Ensure task_id & canonical_solution pass through if missing
+        if "task_id" not in out_obj:
+            out_obj["task_id"] = obj.get("task_id")
+        if "canonical_solution" not in out_obj and obj.get("canonical_solution") is not None:
+            out_obj["canonical_solution"] = obj.get("canonical_solution")
         out_rows.append(out_obj)
 
     _write_jsonl(Path(req.output_path), out_rows)
@@ -1278,10 +1037,6 @@ def infer_dataset_structured(req: InferDatasetStructuredReq) -> InferDatasetResp
             f"unload_after={req.unload_after}",
         ],
     )
-
-
-class InferUnloadReq(BaseModel):
-    model: InferModelCfg
 
 
 @app.post("/api/infer/unload")
@@ -1318,70 +1073,6 @@ def infer_unload_all() -> Dict[str, Any]:
     except Exception:
         pass
     return {"ok": any_ok, "cleared": True, "remaining": len(_MODEL_CACHE)}
-
-
-class DSpyModelCfg(BaseModel):
-    model: str
-    dtype: str = "float16"
-    device_map: str = "auto"
-
-
-class DSpyGenParams(BaseModel):
-    max_new_tokens: int = 512
-    temperature: float = 0.7
-    top_p: float = 0.95
-    do_sample: bool = False
-    n: int = 1
-    num_beams: int = 1
-    early_stopping: bool = True
-
-
-class DSpyTextReq(BaseModel):
-    input_text: str
-    signature_mode: str = "completion"  # "completion" | "defense" | "custom" | "freeform"
-    model: DSpyModelCfg
-    gen: DSpyGenParams = DSpyGenParams()
-    unload_after: bool = False
-    # Custom prompt support
-    custom_prompt_text: Optional[str] = None
-    custom_vars: Optional[Dict[str, Any]] = None
-    extract_code: bool = False
-
-
-class DSpyTextResp(BaseModel):
-    candidates: List[str]
-    analyses: Optional[List[str]] = None
-    elapsed_ms: int
-
-
-class DSpyDatasetReq(BaseModel):
-    input_path: str
-    output_path: str
-    field: str
-    signature_mode: str = "completion"  # "completion" | "defense" | "custom" | "freeform"
-    model: DSpyModelCfg
-    gen: DSpyGenParams = DSpyGenParams()
-    emit_flat: bool = True
-    write_mode: str = Field("generation", description="'generation' | 'overwrite'")
-    output_field: Optional[str] = None
-    limit: int = 0
-    unload_after: bool = False
-    # Custom prompt support
-    custom_prompt_text: Optional[str] = None
-    custom_vars: Optional[Dict[str, Any]] = None
-    extract_code: bool = False
-    # Combine prompt + code then split back if needed (for datasets like HumanEval)
-    combine_fields: bool = False
-    prompt_field: Optional[str] = None
-    output_prompt_field: Optional[str] = None
-    output_code_field: Optional[str] = None
-
-
-class DSpyDatasetResp(BaseModel):
-    total: int
-    output_path: str
-    elapsed_ms: int
-    preview: List[Dict[str, Any]] = []
 
 
 @app.post("/api/dspy/generate", response_model=DSpyTextResp)
@@ -1459,5 +1150,3 @@ def dspy_dataset(req: DSpyDatasetReq) -> DSpyDatasetResp:
         elapsed_ms=result.get("elapsed_ms", 0),
         preview=result.get("preview", []),
     )
-
-

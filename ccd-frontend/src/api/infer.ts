@@ -44,6 +44,7 @@ export type InferTextResp = {
   elapsed_ms: number;
   log: string[];
   decoded?: string[];
+  structured_candidates?: { analysis: string; code: string }[];
 };
 
 export async function inferGenerate(body: InferTextReq) {
@@ -118,6 +119,26 @@ export type InferDatasetStructuredReq = {
 
 export async function inferDatasetStructured(body: InferDatasetStructuredReq) {
   const { data } = await http.post<InferDatasetResp>('/infer/dataset_structured', body);
+  return data;
+}
+
+export async function inferDatasetStructuredAsync(body: InferDatasetStructuredReq) {
+  const { data } = await http.post<{ task_id: string }>('/infer/dataset_structured_async', body);
+  return data;
+}
+
+export type InferProgressResp = {
+  task_id: string;
+  status: 'pending' | 'loading_model' | 'running' | 'completed' | 'error';
+  current: number;
+  total: number;
+  percent: number;
+  error?: string;
+  result?: InferDatasetResp;
+};
+
+export async function getInferProgress(task_id: string) {
+  const { data } = await http.get<InferProgressResp>('/infer/progress', { params: { task_id } });
   return data;
 }
 
@@ -210,5 +231,3 @@ export async function dspyDataset(body: DSpyDatasetReq) {
   const { data } = await http.post<DSpyDatasetResp>('/dspy/dataset', body);
   return data;
 }
-
-

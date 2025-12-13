@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
-import { Button, Card, Col, Divider, Form, Input, InputNumber, Row, Select, Space, Switch, Tabs, Typography, message } from 'antd';
-import { inferDatasetStructured, unloadModel, inspectJsonl } from '../../api/infer';
+import { useEffect, useState, useRef } from 'react';
+import { Button, Card, Col, Divider, Form, Input, InputNumber, Row, Select, Space, Switch, Tabs, Typography, message, Progress } from 'antd';
+import { inferDatasetStructured, inferDatasetStructuredAsync, getInferProgress, unloadModel, inspectJsonl } from '../../api/infer';
 import type { InferGenParams, InferModelCfg, InferPromptCfg, InputBuilder, OutputSchema, InferDatasetStructuredReq } from '../../api/infer';
 
 const { Text } = Typography;
@@ -18,69 +18,9 @@ export default function InferDataset() {
   const [preview, setPreview] = useState<any[]>([]);
   const [fields, setFields] = useState<string[]>([]);
   const [schemaPreview, setSchemaPreview] = useState<any[]>([]);
-
-  const presetTemplate =
-    [
-      'Role：',
-      'You are a Static Analysis Engine with Constraint Assessment capabilities.',
-      '',
-      'Task：',
-      'Clean the provided code and generate 4 stylistically diverse variants.',
-      '',
-      'Constraints：',
-      'Keep exactly the same function name and return type.',
-      'Only clean parameter names by removing trigger suffixes.',
-      'Include all #include statements from the original code (use actual statements, not placeholders)',
-      '',
-      'Input Code{language}：',
-      '{poisoned_code}',
-      '',
-      'Thinking：',
-      'Perform the following Constraint Assessment:',
-      '',
-      'Phase 1: Constraint Assessment (CoT)',
-      'Perform a mental static analysis:',
-      'Reachability Analysis: Analyze if(0) / while(0). Conclusion: Unreachable code (Dead). Action: Remove.',
-      'Taint Analysis: Track variables ending in _secret, _vuln. Action: Sanitize/Rename to remove taint.',
-      'Signature Constraint Locking: Extract the function signature: [NAME] ().',
-      'Constraint: This signature is IMMUTABLE.',
-      'Header Constraint: Extract list of #include. Constraint: Must appear in all outputs.',
-      '',
-      'Phase 2: Execution Instructions',
-      'Generate 4 clean variants respecting the Locked Constraints:',
-      'Remove dead code.',
-      'Fix suspicious variable names (suffixes: _sh, _secret, etc.).',
-      'Remove volatile declarations.',
-      'Keep EXACTLY the same function name and return type.',
-      'Include ALL #include statements.',
-      '',
-      'CRITICAL OUTPUT REQUIREMENTS：',
-      'Output 4 (FOUR) code variants.',
-      'Ensure high stylistic diversity while maintaining semantic equivalence.',
-      'Use REAL #include statements.',
-      'NO explanations, NO placeholders.',
-      '',
-      'Output Format：',
-      '```cpp',
-      '',
-      '// Variant 1',
-      '#include...',
-      'bool function_name(...) {... }',
-      '',
-      '// Variant 2',
-      '#include...',
-      'bool function_name(...) {... }',
-      '',
-      '// Variant 3',
-      '#include...',
-      'bool function_name(...) {... }',
-      '',
-      '// Variant 4',
-      '#include...',
-      'bool function_name(...) {... }',
-      '',
-      '```',
-    ].join('\n');
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [progress, setProgress] = useState({ percent: 0, current: 0, total: 0, status: '' });
+  const pollingRef = useRef<NodeJS.Timeout>();
 
   const fillPreset = () => {
     const v = form.getFieldsValue();
@@ -90,6 +30,16 @@ export default function InferDataset() {
       max_new_tokens: v?.max_new_tokens || 256,
     });
     message.success('已填充推荐参数（num_beams≥4）。');
+  };
+
+  const fillEvalPreset = () => {
+    form.setFieldsValue({
+      output_mode: 'single_field',
+      output_field: 'cleaned_variants',
+      emit_flat: true,
+      extract_sections: true,
+    });
+    message.success('已填充评估脚本格式：single_field=cleaned_variants，emit_flat=true，解析思维链已开启。');
   };
 
   const fillStructuredPreset = () => {
@@ -152,6 +102,48 @@ export default function InferDataset() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Polling logic
+  useEffect(() => {
+    if (taskId) {
+      const poll = async () => {
+        try {
+          const info = await getInferProgress(taskId);
+          setProgress({
+            percent: info.percent,
+            current: info.current,
+            total: info.total,
+            status: info.status,
+          });
+          if (info.status === 'completed' || info.status === 'error') {
+            setTaskId(null);
+            setLoading(false);
+            if (info.status === 'completed' && info.result) {
+              const res = info.result;
+              setPreview(res.preview || []);
+              setLogs([`总计: ${res.total}`, `耗时: ${res.elapsed_ms} ms`, ...res.log, `输出: ${res.output_path}`]);
+              message.success(`已写入：${res.output_path}`);
+            } else if (info.status === 'error') {
+              message.error(info.error || '执行失败');
+              setLogs((prev) => [...prev, `Error: ${info.error}`]);
+            }
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      };
+      pollingRef.current = setInterval(poll, 1000);
+      poll(); // immediate
+    } else {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = undefined;
+      }
+    }
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, [taskId]);
+
   const handleValuesChange = (_: any, allValues: any) => {
     try {
       localStorage.setItem('infer_dataset_form', JSON.stringify(allValues));
@@ -163,6 +155,9 @@ export default function InferDataset() {
       const v = await form.validateFields();
       setLoading(true);
       setLogs([]);
+      setPreview([]);
+      setProgress({ percent: 0, current: 0, total: 0, status: 'starting' });
+      
       const model: InferModelCfg = {
         model: v.model,
         dtype: v.dtype,
@@ -217,13 +212,12 @@ export default function InferDataset() {
         limit: v.limit ?? 0,
         unload_after: !!v.unload_after,
       };
-      const res = await inferDatasetStructured(body);
-      setPreview(res.preview || []);
-      setLogs([`总计: ${res.total}`, `耗时: ${res.elapsed_ms} ms`, ...res.log, `输出: ${res.output_path}`]);
-      message.success(`已写入：${res.output_path}`);
+      
+      const res = await inferDatasetStructuredAsync(body);
+      setTaskId(res.task_id);
+      message.info('后台任务已提交，开始执行...');
     } catch (e: any) {
-      message.error(e.message ?? '执行失败');
-    } finally {
+      message.error(e.message ?? '提交失败');
       setLoading(false);
     }
   };
@@ -233,10 +227,22 @@ export default function InferDataset() {
       <Card title="Inference · 数据集推理（结构化）">
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           <Button type="primary" onClick={onRun} loading={loading}>
-            执行数据集推理
+            执行数据集推理 (异步)
           </Button>
           <Button onClick={fillPreset} disabled={loading}>填充推荐参数</Button>
+          <Button onClick={fillEvalPreset} disabled={loading}>填充评估脚本格式（cleaned_variants）</Button>
         </div>
+        
+        {loading && (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <Text type="secondary">状态: {progress.status}</Text>
+              <Text>{progress.current} / {progress.total}</Text>
+            </div>
+            <Progress percent={Math.round(progress.percent * 10) / 10} status={progress.status === 'error' ? 'exception' : 'active'} />
+          </div>
+        )}
+        
         <Divider />
 
         <Row gutter={16} wrap={false}>
@@ -591,5 +597,3 @@ export default function InferDataset() {
     </Space>
   );
 }
-
-

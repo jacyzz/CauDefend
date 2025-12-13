@@ -86,6 +86,57 @@ def extract_response(full_text: str) -> str:
     return content
 
 
+def extract_analysis_code(txt: str) -> (str, str):
+    """
+    Split model output into analysis and code.
+    Rules (best-effort):
+      1) [Trace Analysis] ... [Sanitized Code] ...
+      2) Trace Analysis: ... Sanitized Code: ...
+      3) First fenced code block as code; prefix as analysis
+      4) Fallback: analysis="", code=txt
+    """
+    import re
+    t = (txt or "").replace("\r\n", "\n")
+
+    def first_fenced(s: str) -> str | None:
+        m = re.search(r"```[a-zA-Z0-9_+\-]*\n([\s\S]*?)```", s, re.MULTILINE)
+        if m:
+            return m.group(1).strip()
+        return None
+
+    # 1) [Trace Analysis] ... [Sanitized Code] ...
+    m1 = re.search(r"\[trace\s*analysis\](.*)\[sanitized\s*code\](.*)$", t, flags=re.IGNORECASE | re.DOTALL)
+    if m1:
+        analysis = m1.group(1).strip()
+        tail = m1.group(2).strip()
+        code = first_fenced(tail) or tail
+        return analysis, code
+
+    # 2) Trace Analysis: ... Sanitized Code:
+    m2 = re.search(r"trace\s*analysis\s*:\s*(.*)$", t, flags=re.IGNORECASE | re.DOTALL)
+    if m2:
+        after = m2.group(1)
+        m2b = re.search(r"(.*)sanitized\s*code\s*:\s*(.*)$", after, flags=re.IGNORECASE | re.DOTALL)
+        if m2b:
+            analysis = m2b.group(1).strip()
+            tail = m2b.group(2).strip()
+            code = first_fenced(tail) or tail
+            return analysis, code
+        block = first_fenced(after)
+        if block:
+            head = after.split("```", 1)[0].strip()
+            return head, block
+
+    # 3) Fenced code block only
+    only = first_fenced(t)
+    if only:
+        head = t.split("```", 1)[0].strip()
+        return head, only
+
+    # 4) Fallback
+    return "", t.strip()
+
+
 def softmax_scores(scores: torch.Tensor) -> torch.Tensor:
     try:
         return torch.nn.functional.softmax(scores, dim=0)
@@ -173,6 +224,14 @@ def main():
             return True
         return any(n in files for n in names)
 
+    def _maybe_enable_safetensors(path: str) -> None:
+        try:
+            files = set(os.listdir(path))
+        except Exception:
+            return
+        if "model.safetensors.index.json" in files or any(fn.endswith(".safetensors") for fn in files):
+            model_kwargs["use_safetensors"] = True
+
     def _dir_is_peft_adapter(path: str) -> bool:
         try:
             files = set(os.listdir(path))
@@ -185,6 +244,7 @@ def main():
             from peft import PeftModel  # type: ignore
         except Exception as e:
             raise ImportError("peft is required to load LoRA adapters. Install: pip install peft") from e
+        _maybe_enable_safetensors(base)
         tok = AutoTokenizer.from_pretrained(base, trust_remote_code=args.trust_remote_code)
         mdl = AutoModelForCausalLM.from_pretrained(base, **model_kwargs)
         mdl = PeftModel.from_pretrained(mdl, adapter)
@@ -204,8 +264,7 @@ def main():
                 files = set(os.listdir(want))
             except Exception:
                 files = set()
-            if ("model.safetensors.index.json" in files) or any(fn.endswith(".safetensors") for fn in files):
-                model_kwargs["use_safetensors"] = True
+            _maybe_enable_safetensors(want)
             model = AutoModelForCausalLM.from_pretrained(want, **model_kwargs)
             tokenizer = AutoTokenizer.from_pretrained(want, trust_remote_code=args.trust_remote_code)
         elif _dir_is_peft_adapter(want):
@@ -285,22 +344,29 @@ def main():
         decoded = [tokenizer.decode(s, skip_special_tokens=True) for s in seqs]
 
         responses: List[str] = []
+        analyses: List[str] = []
+        codes: List[str] = []
         for t in decoded:
             resp = extract_response(t)
             if not resp.strip():
                 pos = t.rfind("### Response:")
                 tail = t[pos + len("### Response:"):].strip() if pos >= 0 else t.strip()
                 resp = tail if tail else (obj.get(args.code_field, "") or "")
+            analysis, code = extract_analysis_code(resp)
             responses.append(resp)
+            analyses.append(analysis)
+            codes.append(code)
 
         out_obj = dict(obj)
         variants: List[Dict[str, Any]] = []
         for i, resp in enumerate(responses, start=1):
+            analysis = analyses[i-1] if i-1 < len(analyses) else ""
+            code = codes[i-1] if i-1 < len(codes) else resp
             variants.append(
                 {
                     "variant": i,
-                    "trace_analysis": "",
-                    "sanitized_code": resp,
+                    "trace_analysis": analysis,
+                    "sanitized_code": code,
                 }
             )
         out_obj[args.output_field] = variants
