@@ -12,6 +12,8 @@ from ccd.inference.engine import (
     GenerationConfig as HfGenConfig,
     generate_for_text,
 )
+from ccd.inference.remote_openai_compat import OpenAICompatClient
+from ccd.server.settings import load_remote_provider_settings
 from ccd.server.schema import (
     InferDatasetStructuredReq,
     InferDatasetResp,
@@ -40,14 +42,27 @@ from ccd.inference.processors import (
 router = APIRouter()
 
 def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
+    remote_client = None
+    provider = (getattr(req, "provider", "local") or "local").strip() or "local"
     try:
         # Late imports to avoid circular dependency
         from ccd.server.main import _get_or_load_model, _read_jsonl, _write_jsonl, _release_model
 
         update_task(task_id, {"status": "loading_model"})
-        
-        # 1. Load Model
-        model, tok = _get_or_load_model(req.model)
+
+        # 1. Load Model (or prepare remote client)
+        model = None
+        tok = None
+        if provider == "local":
+            model, tok = _get_or_load_model(req.model)
+        else:
+            try:
+                settings = load_remote_provider_settings(provider)
+            except ValueError as e:
+                update_task(task_id, {"status": "error", "error": str(e)[:800]})
+                return
+            remote_client = OpenAICompatClient(settings)
+            remote_client.__enter__()
         
         gen_cfg = HfGenConfig(
             max_new_tokens=req.gen.max_new_tokens,
@@ -94,12 +109,17 @@ def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
             # Update progress
             if idx % 5 == 0:
                 update_task(task_id, {"current": idx})
-            
+
             input_text = input_builder.build(obj)
             if not input_text:
                 continue
 
-            responses, weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
+            if provider == "local":
+                responses, weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
+            else:
+                assert remote_client is not None
+                result = remote_client.generate(model=req.model.model, input_text=input_text, prompt_cfg=pr_cfg, gen_cfg=gen_cfg)
+                responses, weights, _decoded = result.candidates, None, result.decoded
 
             parsed_candidates = [parser.parse(r) for r in responses]
             out_obj = composer.compose(obj, parsed_candidates)
@@ -119,7 +139,8 @@ def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
         
         if req.unload_after:
             try:
-                _release_model(req.model)
+                if provider == "local":
+                    _release_model(req.model)
             except Exception:
                 pass
         
@@ -133,7 +154,16 @@ def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
 
     except Exception as e:
         traceback.print_exc()
-        update_task(task_id, {"status": "error", "error": str(e)})
+        err = str(e)
+        if len(err) > 800:
+            err = err[:800] + "..."
+        update_task(task_id, {"status": "error", "error": err})
+    finally:
+        if remote_client is not None:
+            try:
+                remote_client.__exit__(None, None, None)
+            except Exception:
+                pass
 
 
 @router.post("/api/infer/dataset_structured_async")

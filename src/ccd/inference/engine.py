@@ -167,11 +167,10 @@ def load_system_prompt(cfg: PromptConfig) -> str:
 
 
 def build_prompt(input_text: str, system_prompt: str) -> str:
-    header = system_prompt.strip() if system_prompt else (
-        "You are a senior code refactoring expert. Transform the given code to be safer and cleaner "
-        "while keeping its original functionality exactly the same. Output ONLY the final code."
-    )
-    return f"{header}\n\n### Input:\n{input_text}\n\n### Response:"
+    header = (system_prompt or "").strip()
+    if header:
+        return f"{header}\n\n### Input:\n{input_text}\n\n### Response:"
+    return f"### Input:\n{input_text}\n\n### Response:"
 
 
 def extract_response(full_text: str) -> str:

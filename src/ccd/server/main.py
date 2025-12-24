@@ -26,6 +26,8 @@ from ccd.inference.engine import (
     build_prompt as eng_build_prompt,
     softmax_scores as eng_softmax,
 )
+from ccd.inference.remote_openai_compat import OpenAICompatClient
+from ccd.server.settings import load_remote_provider_settings
 from ccd.inference.processors import (
     MergeFieldsBuilder,
     make_parser,
@@ -723,7 +725,7 @@ def get_record(
 def infer_generate(req: InferTextReq) -> InferTextResp:
     if not req.input_text or not req.model or not req.model.model:
         raise HTTPException(status_code=400, detail="input_text and model.model are required")
-    model, tok = _get_or_load_model(req.model)
+    provider = (getattr(req, "provider", "local") or "local").strip() or "local"
     gen_cfg = HfGenConfig(
         max_new_tokens=req.gen.max_new_tokens,
         do_sample=req.gen.do_sample,
@@ -740,7 +742,17 @@ def infer_generate(req: InferTextReq) -> InferTextResp:
         system_prompt_text=req.prompt.system_prompt_text,
     )
     t0 = time.time()
-    responses, weights, decoded = generate_for_text(model, tok, req.input_text, pr_cfg, gen_cfg)
+    if provider == "local":
+        model, tok = _get_or_load_model(req.model)
+        responses, weights, decoded = generate_for_text(model, tok, req.input_text, pr_cfg, gen_cfg)
+    else:
+        try:
+            settings = load_remote_provider_settings(provider)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        with OpenAICompatClient(settings) as client:
+            result = client.generate(model=req.model.model, input_text=req.input_text, prompt_cfg=pr_cfg, gen_cfg=gen_cfg)
+        responses, weights, decoded = result.candidates, None, result.decoded
     # Optional: parse analysis/code for single inference to align with dataset behavior
     parser = make_parser(mode="cot", default_analysis="")
     structured = [parser.parse(r) for r in responses]
@@ -755,7 +767,7 @@ def infer_generate(req: InferTextReq) -> InferTextResp:
             ]
         except Exception:
             safe_weights = None
-    if req.unload_after:
+    if req.unload_after and provider == "local":
         try:
             _release_model(req.model)
         except Exception:
@@ -765,6 +777,7 @@ def infer_generate(req: InferTextReq) -> InferTextResp:
         scores=safe_weights,
         elapsed_ms=ms,
         log=[
+            f"provider={provider}",
             f"num_beams={req.gen.num_beams}",
             f"num_return_sequences={req.gen.num_return_sequences}",
             f"num_beam_groups={req.gen.num_beam_groups}",
@@ -785,7 +798,7 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
     # Reuse engine's robust text generator per record to avoid dtype/group-beam issues.
     from ccd.inference.beam_infer import read_jsonl as _read, write_jsonl as _write
 
-    model, tok = _get_or_load_model(req.model)
+    provider = (getattr(req, "provider", "local") or "local").strip() or "local"
     gen_cfg = HfGenConfig(
         max_new_tokens=req.gen.max_new_tokens,
         do_sample=req.gen.do_sample,
@@ -851,35 +864,70 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
         # 4) Fallback: treat entire text as code
         return (fallback_prompt, out_text)
 
-    for idx, obj in enumerate(iterator):
-        code = obj.get(req.field, None)
-        if not isinstance(code, str) or not code.strip():
-            continue
-        input_text = code
-        prompt_val = ""
-        if req.combine_fields and isinstance(req.prompt_field, str) and req.prompt_field.strip():
-            prompt_val = str(obj.get(req.prompt_field, "") or "")
-            # Simple concatenation; you may also enforce a template on frontend
-            input_text = f"{prompt_val}\n\n{code}"
-        responses, weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
-        if req.progress and req.progress_every > 0 and (idx + 1) % req.progress_every == 0:
+    remote_client = None
+    try:
+        if provider == "local":
+            model, tok = _get_or_load_model(req.model)
+        else:
             try:
-                # update tqdm postfix if available
-                if hasattr(iterator, "set_postfix_str"):
-                    iterator.set_postfix_str(f"processed={idx+1}")
-            except Exception:
-                pass
+                settings = load_remote_provider_settings(provider)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            remote_client = OpenAICompatClient(settings)
+            remote_client.__enter__()
 
-        effective_flat = req.emit_flat or (req.gen.num_return_sequences and req.gen.num_return_sequences > 1)
-        if req.write_mode == "generation":
-            dst_field = (
-                req.output_field.strip()
-                if (isinstance(req.output_field, str) and req.output_field.strip())
-                else "generation"
-            )
-            if effective_flat:
-                for i, resp in enumerate(responses):
+        for idx, obj in enumerate(iterator):
+            code = obj.get(req.field, None)
+            if not isinstance(code, str) or not code.strip():
+                continue
+            input_text = code
+            prompt_val = ""
+            if req.combine_fields and isinstance(req.prompt_field, str) and req.prompt_field.strip():
+                prompt_val = str(obj.get(req.prompt_field, "") or "")
+                # Simple concatenation; you may also enforce a template on frontend
+                input_text = f"{prompt_val}\n\n{code}"
+
+            if provider == "local":
+                responses, weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
+            else:
+                assert remote_client is not None
+                result = remote_client.generate(model=req.model.model, input_text=input_text, prompt_cfg=pr_cfg, gen_cfg=gen_cfg)
+                responses, weights, _decoded = result.candidates, None, result.decoded
+
+            if req.progress and req.progress_every > 0 and (idx + 1) % req.progress_every == 0:
+                try:
+                    # update tqdm postfix if available
+                    if hasattr(iterator, "set_postfix_str"):
+                        iterator.set_postfix_str(f"processed={idx+1}")
+                except Exception:
+                    pass
+
+            effective_flat = req.emit_flat or (req.gen.num_return_sequences and req.gen.num_return_sequences > 1)
+            if req.write_mode == "generation":
+                dst_field = (
+                    req.output_field.strip()
+                    if (isinstance(req.output_field, str) and req.output_field.strip())
+                    else "generation"
+                )
+                if effective_flat:
+                    for i, resp in enumerate(responses):
+                        out_obj = dict(obj)
+                        if req.combine_fields and (req.output_prompt_field or req.output_code_field):
+                            p_out, c_out = _split_output(resp, prompt_val)
+                            if req.output_prompt_field and req.output_prompt_field.strip():
+                                out_obj[req.output_prompt_field] = p_out
+                            if req.output_code_field and req.output_code_field.strip():
+                                out_obj[req.output_code_field] = c_out
+                            out_obj[dst_field] = c_out if req.extract_code else resp
+                        else:
+                            out_obj[dst_field] = resp
+                        out_obj["completion_id"] = i
+                        if weights is not None and i < len(weights):
+                            out_obj["variant_score"] = weights[i]
+                        out_rows.append(out_obj)
+                else:
                     out_obj = dict(obj)
+                    resp = responses[0] if responses else code
                     if req.combine_fields and (req.output_prompt_field or req.output_code_field):
                         p_out, c_out = _split_output(resp, prompt_val)
                         if req.output_prompt_field and req.output_prompt_field.strip():
@@ -889,59 +937,49 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
                         out_obj[dst_field] = c_out if req.extract_code else resp
                     else:
                         out_obj[dst_field] = resp
-                    out_obj["completion_id"] = i
-                    if weights is not None and i < len(weights):
-                        out_obj["variant_score"] = weights[i]
                     out_rows.append(out_obj)
             else:
-                out_obj = dict(obj)
-                resp = responses[0] if responses else code
-                if req.combine_fields and (req.output_prompt_field or req.output_code_field):
-                    p_out, c_out = _split_output(resp, prompt_val)
-                    if req.output_prompt_field and req.output_prompt_field.strip():
-                        out_obj[req.output_prompt_field] = p_out
-                    if req.output_code_field and req.output_code_field.strip():
-                        out_obj[req.output_code_field] = c_out
-                    out_obj[dst_field] = c_out if req.extract_code else resp
+                if effective_flat:
+                    for i, resp in enumerate(responses):
+                        out_obj = dict(obj)
+                        if req.combine_fields and (req.output_prompt_field or req.output_code_field):
+                            p_out, c_out = _split_output(resp, prompt_val)
+                            if req.output_prompt_field and req.output_prompt_field.strip():
+                                out_obj[req.output_prompt_field] = p_out
+                            # overwrite code field with parsed code
+                            out_obj[req.field] = c_out if req.extract_code else resp
+                            if req.output_code_field and req.output_code_field.strip():
+                                out_obj[req.output_code_field] = c_out
+                        else:
+                            out_obj[req.field] = resp
+                        out_obj["completion_id"] = i
+                        if weights is not None and i < len(weights):
+                            out_obj["variant_score"] = weights[i]
+                        out_rows.append(out_obj)
                 else:
-                    out_obj[dst_field] = resp
-                out_rows.append(out_obj)
-        else:
-            if effective_flat:
-                for i, resp in enumerate(responses):
                     out_obj = dict(obj)
+                    resp = responses[0] if responses else code
                     if req.combine_fields and (req.output_prompt_field or req.output_code_field):
                         p_out, c_out = _split_output(resp, prompt_val)
                         if req.output_prompt_field and req.output_prompt_field.strip():
                             out_obj[req.output_prompt_field] = p_out
-                        # overwrite code field with parsed code
                         out_obj[req.field] = c_out if req.extract_code else resp
                         if req.output_code_field and req.output_code_field.strip():
                             out_obj[req.output_code_field] = c_out
                     else:
                         out_obj[req.field] = resp
-                    out_obj["completion_id"] = i
-                    if weights is not None and i < len(weights):
-                        out_obj["variant_score"] = weights[i]
                     out_rows.append(out_obj)
-            else:
-                out_obj = dict(obj)
-                resp = responses[0] if responses else code
-                if req.combine_fields and (req.output_prompt_field or req.output_code_field):
-                    p_out, c_out = _split_output(resp, prompt_val)
-                    if req.output_prompt_field and req.output_prompt_field.strip():
-                        out_obj[req.output_prompt_field] = p_out
-                    out_obj[req.field] = c_out if req.extract_code else resp
-                    if req.output_code_field and req.output_code_field.strip():
-                        out_obj[req.output_code_field] = c_out
-                else:
-                    out_obj[req.field] = resp
-                out_rows.append(out_obj)
+    finally:
+        if remote_client is not None:
+            try:
+                remote_client.__exit__(None, None, None)
+            except Exception:
+                pass
 
     _write(req.output_path, out_rows)
     ms = int((time.time() - t0) * 1000)
     preview = out_rows[: min(5, len(out_rows))]
-    if req.unload_after:
+    if req.unload_after and provider == "local":
         try:
             _release_model(req.model)
         except Exception:
@@ -952,6 +990,7 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
         preview=preview,
         elapsed_ms=ms,
         log=[
+            f"provider={provider}",
             f"num_beams={req.gen.num_beams}",
             f"num_return_sequences={req.gen.num_return_sequences}",
             f"emit_flat={req.emit_flat}",
@@ -964,7 +1003,7 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
 
 @app.post("/api/infer/dataset_structured", response_model=InferDatasetResp)
 def infer_dataset_structured(req: InferDatasetStructuredReq) -> InferDatasetResp:
-    model, tok = _get_or_load_model(req.model)
+    provider = (getattr(req, "provider", "local") or "local").strip() or "local"
     gen_cfg = HfGenConfig(
         max_new_tokens=req.gen.max_new_tokens,
         do_sample=req.gen.do_sample,
@@ -999,26 +1038,49 @@ def infer_dataset_structured(req: InferDatasetStructuredReq) -> InferDatasetResp
     parser = make_parser(mode="cot" if req.output_schema.extract_sections else "raw", default_analysis=req.output_schema.trace_analysis)
     composer = make_composer(mode=req.output_schema.mode, field=req.output_schema.field, emit_flat=req.output_schema.emit_flat)
 
-    for obj in rows:
-        input_text = input_builder.build(obj)
-        if not input_text:
-            continue
+    remote_client = None
+    try:
+        if provider == "local":
+            model, tok = _get_or_load_model(req.model)
+        else:
+            try:
+                settings = load_remote_provider_settings(provider)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            remote_client = OpenAICompatClient(settings)
+            remote_client.__enter__()
 
-        responses, weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
+        for obj in rows:
+            input_text = input_builder.build(obj)
+            if not input_text:
+                continue
 
-        parsed_candidates = [parser.parse(r) for r in responses]
-        out_obj = composer.compose(obj, parsed_candidates)
-        # Ensure task_id & canonical_solution pass through if missing
-        if "task_id" not in out_obj:
-            out_obj["task_id"] = obj.get("task_id")
-        if "canonical_solution" not in out_obj and obj.get("canonical_solution") is not None:
-            out_obj["canonical_solution"] = obj.get("canonical_solution")
-        out_rows.append(out_obj)
+            if provider == "local":
+                responses, weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
+            else:
+                assert remote_client is not None
+                result = remote_client.generate(model=req.model.model, input_text=input_text, prompt_cfg=pr_cfg, gen_cfg=gen_cfg)
+                responses, weights, _decoded = result.candidates, None, result.decoded
+
+            parsed_candidates = [parser.parse(r) for r in responses]
+            out_obj = composer.compose(obj, parsed_candidates)
+            # Ensure task_id & canonical_solution pass through if missing
+            if "task_id" not in out_obj:
+                out_obj["task_id"] = obj.get("task_id")
+            if "canonical_solution" not in out_obj and obj.get("canonical_solution") is not None:
+                out_obj["canonical_solution"] = obj.get("canonical_solution")
+            out_rows.append(out_obj)
+    finally:
+        if remote_client is not None:
+            try:
+                remote_client.__exit__(None, None, None)
+            except Exception:
+                pass
 
     _write_jsonl(Path(req.output_path), out_rows)
     ms = int((time.time() - t0) * 1000)
     preview = out_rows[: min(5, len(out_rows))]
-    if req.unload_after:
+    if req.unload_after and provider == "local":
         try:
             _release_model(req.model)
         except Exception:
@@ -1032,6 +1094,7 @@ def infer_dataset_structured(req: InferDatasetStructuredReq) -> InferDatasetResp
             f"preset={req.output_schema.preset}",
             f"structured_field={req.output_schema.field}",
             f"id_field={req.input_builder.id_field}",
+            f"provider={provider}",
             f"num_beams={req.gen.num_beams}",
             f"num_return_sequences={req.gen.num_return_sequences}",
             f"unload_after={req.unload_after}",
