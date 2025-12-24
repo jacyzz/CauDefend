@@ -24,11 +24,23 @@ class RemoteChatResult:
 
 
 def _join_url(base_url: str, path: str) -> str:
-    b = (base_url or "").rstrip("/")
+    b = (base_url or "").strip().rstrip("/")
     p = (path or "").strip()
-    if not p.startswith("/"):
-        p = "/" + p
-    return b + p
+    if not b:
+        return p
+
+    # Normalize path to no leading slash for easier de-duplication.
+    p0 = p.lstrip("/")
+
+    # Common OpenAI-compatible pattern: base ends with /v1, path starts with v1/...
+    # Avoid producing .../v1/v1/...
+    if b.endswith("/v1") and (p0 == "v1" or p0.startswith("v1/")):
+        p0 = p0[3:]  # drop leading 'v1'
+        p0 = p0.lstrip("/")
+
+    if not p0:
+        return b
+    return b + "/" + p0
 
 
 def _safe_error_text(text: str, secrets: List[str]) -> str:

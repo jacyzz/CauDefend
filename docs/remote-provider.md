@@ -63,6 +63,20 @@ bash scripts/server/run_api.sh 8001
 
 对 429/5xx 会做简单指数退避重试。
 
+## 2.3 关于 base_url / chat_path 的写法（避免重复 /v1）
+
+很多中转站会给两种等价写法，你任选其一即可：
+
+- 写法 A（推荐）：
+  - `CCD_REMOTE_BASE_URL=https://poloai.top`
+  - `CCD_REMOTE_CHAT_PATH=/v1/chat/completions`
+
+- 写法 B（也支持）：
+  - `CCD_REMOTE_BASE_URL=https://poloai.top/v1/`
+  - `CCD_REMOTE_CHAT_PATH=chat/completions`
+
+后端会做一次简单的去重，避免拼成 `.../v1/v1/...`。
+
 ---
 
 ## 3. API 使用方式
@@ -88,6 +102,8 @@ curl -X POST http://127.0.0.1:8001/api/infer/generate \
 ```
 
 备注：远端不一定支持 beam/group beam；这些参数可能会被提供商忽略。
+
+补充：`/v1/chat/completions` 一般**只支持 POST**，用 `curl -i <url>`（GET）测试会得到 404，这是正常的。
 
 ### 3.2 数据集推理（结构化异步）
 
