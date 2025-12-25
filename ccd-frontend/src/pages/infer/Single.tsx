@@ -20,76 +20,9 @@ export default function InferSingle() {
   const [logs, setLogs] = useState<string[]>([]);
   const [candidates, setCandidates] = useState<{ text: string; score?: number }[]>([]);
   const [decoded, setDecoded] = useState<string[] | undefined>();
-  const [engine] = useState<'hf'>('hf');
   const [decodeEscapes, setDecodeEscapes] = useState<boolean>(true);
   const [elapsed, setElapsed] = useState<number>(0);
   const [extractSections, setExtractSections] = useState<boolean>(true);
-
-  const presetTemplate = useMemo(
-    () =>
-      [
-        'Role：',
-        'You are a Static Analysis Engine with Constraint Assessment capabilities.',
-        '',
-        'Task：',
-        'Clean the provided code and generate 4 stylistically diverse variants.',
-        '',
-        'Constraints：',
-        'Keep exactly the same function name and return type.',
-        'Only clean parameter names by removing trigger suffixes.',
-        'Include all #include statements from the original code (use actual statements, not placeholders)',
-        '',
-        'Input Code{language}：',
-        '{poisoned_code}',
-        '',
-        'Thinking：',
-        'Perform the following Constraint Assessment:',
-        '',
-        'Phase 1: Constraint Assessment (CoT)',
-        'Perform a mental static analysis:',
-        'Reachability Analysis: Analyze if(0) / while(0). Conclusion: Unreachable code (Dead). Action: Remove.',
-        'Taint Analysis: Track variables ending in _secret, _vuln. Action: Sanitize/Rename to remove taint.',
-        'Signature Constraint Locking: Extract the function signature: [NAME] ().',
-        'Constraint: This signature is IMMUTABLE.',
-        'Header Constraint: Extract list of #include. Constraint: Must appear in all outputs.',
-        '',
-        'Phase 2: Execution Instructions',
-        'Generate 4 clean variants respecting the Locked Constraints:',
-        'Remove dead code.',
-        'Fix suspicious variable names (suffixes: _sh, _secret, etc.).',
-        'Remove volatile declarations.',
-        'Keep EXACTLY the same function name and return type.',
-        'Include ALL #include statements.',
-        '',
-        'CRITICAL OUTPUT REQUIREMENTS：',
-        'Output 4 (FOUR) code variants.',
-        'Ensure high stylistic diversity while maintaining semantic equivalence.',
-        'Use REAL #include statements.',
-        'NO explanations, NO placeholders.',
-        '',
-        'Output Format：',
-        '```cpp',
-        '',
-        '// Variant 1',
-        '#include...',
-        'bool function_name(...) {... }',
-        '',
-        '// Variant 2',
-        '#include...',
-        'bool function_name(...) {... }',
-        '',
-        '// Variant 3',
-        '#include...',
-        'bool function_name(...) {... }',
-        '',
-        '// Variant 4',
-        '#include...',
-        'bool function_name(...) {... }',
-        '',
-        '```',
-      ].join('\n'),
-    [],
-  );
 
   const fillPreset = () => {
     const vals = form.getFieldsValue();

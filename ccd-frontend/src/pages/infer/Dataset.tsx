@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { Button, Card, Col, Divider, Form, Input, InputNumber, Row, Select, Space, Switch, Tabs, Typography, message, Progress } from 'antd';
-import { inferDatasetStructured, inferDatasetStructuredAsync, getInferProgress, unloadModel, inspectJsonl } from '../../api/infer';
+import { inferDatasetStructuredAsync, getInferProgress, unloadModel, inspectJsonl } from '../../api/infer';
 import type { InferGenParams, InferModelCfg, InferPromptCfg, InputBuilder, OutputSchema, InferDatasetStructuredReq } from '../../api/infer';
 
 const { Text } = Typography;
@@ -18,10 +18,9 @@ export default function InferDataset() {
   const [logs, setLogs] = useState<string[]>([]);
   const [preview, setPreview] = useState<any[]>([]);
   const [fields, setFields] = useState<string[]>([]);
-  const [schemaPreview, setSchemaPreview] = useState<any[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [progress, setProgress] = useState({ percent: 0, current: 0, total: 0, status: '' });
-  const pollingRef = useRef<NodeJS.Timeout>();
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fillPreset = () => {
     const v = form.getFieldsValue();
@@ -41,29 +40,6 @@ export default function InferDataset() {
       extract_sections: true,
     });
     message.success('已填充评估脚本格式：single_field=cleaned_variants，emit_flat=true，解析思维链已开启。');
-  };
-
-  const fillStructuredPreset = () => {
-    const v = form.getFieldsValue();
-    form.setFieldsValue({
-      engine: 'hf',
-      // 合并 declaration + canonical_solution，输出结构化 variants 到 output
-      field: v?.field || 'canonical_solution',
-      input_path: v?.input_path || '',
-      output_path: v?.output_path || '',
-      combine_fields: true,
-      prompt_field: 'declaration',
-      write_mode: 'generation',
-      output_field: 'output',
-      emit_flat: false,
-      // 典型 beam 设定：多候选
-      num_beams: Math.max(4, v?.num_beams || 4),
-      num_return_sequences: Math.max(4, v?.num_return_sequences || 4),
-      num_beam_groups: 1,
-      diversity_penalty: 0.0,
-      do_sample: false,
-    });
-    message.success('已填充 HumanEval 结构化输出预设（合并声明+代码，输出到 output.variants）。');
   };
 
   // Persist form across route/tab switches and optionally unload on leave
@@ -133,12 +109,12 @@ export default function InferDataset() {
           console.error(e);
         }
       };
-      pollingRef.current = setInterval(poll, 1000);
+      pollingRef.current = setInterval(poll, 3000);
       poll(); // immediate
     } else {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
-        pollingRef.current = undefined;
+        pollingRef.current = null;
       }
     }
     return () => {
@@ -202,6 +178,7 @@ export default function InferDataset() {
         preset: 'humaneval_structured',
         trace_analysis: v.trace_analysis || '',
         extract_sections: v.extract_sections !== false, // default true
+        keep_original_fields: true,
       };
       const body: InferDatasetStructuredReq = {
         provider: v.provider || 'local',
@@ -356,7 +333,6 @@ export default function InferDataset() {
                                   const v = form.getFieldsValue();
                                   const res = await inspectJsonl(v.input_path, 5);
                                   setFields(res.fields || []);
-                                  setSchemaPreview(res.preview || []);
                                   message.success(`已解析字段：${(res.fields || []).join(', ')}`);
                                 } catch (e: any) {
                                   message.error(e.message ?? '解析失败');

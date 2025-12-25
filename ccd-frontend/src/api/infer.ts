@@ -105,6 +105,7 @@ export type OutputSchema = {
   preset?: 'humaneval_structured' | string;
   trace_analysis?: string;
   extract_sections?: boolean;
+  keep_original_fields?: boolean;
 };
 
 export type InferDatasetStructuredReq = {

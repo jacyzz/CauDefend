@@ -46,7 +46,8 @@ def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
     provider = (getattr(req, "provider", "local") or "local").strip() or "local"
     try:
         # Late imports to avoid circular dependency
-        from ccd.server.main import _get_or_load_model, _read_jsonl, _write_jsonl, _release_model
+        from ccd.server.main import _get_or_load_model, _release_model
+        from ccd.server.jsonl_io import JsonlAtomicWriter, iter_jsonl, count_jsonl
 
         update_task(task_id, {"status": "loading_model"})
 
@@ -80,12 +81,12 @@ def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
             system_prompt_text=req.prompt.system_prompt_text,
         )
 
-        # 2. Read Input
-        rows = _read_jsonl(Path(req.input_path), limit=req.limit or 0)
-        total = len(rows)
+        # 2. Count Input (for progress)
+        total = count_jsonl(Path(req.input_path), limit=req.limit or 0)
         update_task(task_id, {"status": "running", "total": total, "current": 0})
-        
-        out_rows: List[Dict[str, Any]] = []
+
+        out_total = 0
+        preview: List[Dict[str, Any]] = []
         t0 = time.time()
 
         # 3. Setup Processors
@@ -101,41 +102,47 @@ def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
             prefix=ib_cfg.prefix or "",
             suffix=ib_cfg.suffix or "",
         )
-        parser = make_parser(mode="cot" if req.output_schema.extract_sections else "raw", default_analysis=req.output_schema.trace_analysis)
-        composer = make_composer(mode=req.output_schema.mode, field=req.output_schema.field, emit_flat=req.output_schema.emit_flat)
+        parser = make_parser(
+            mode="cot" if req.output_schema.extract_sections else "raw",
+            default_analysis=req.output_schema.trace_analysis,
+        )
+        composer = make_composer(
+            mode=req.output_schema.mode,
+            field=req.output_schema.field,
+            emit_flat=req.output_schema.emit_flat,
+            keep_original_fields=req.output_schema.keep_original_fields,
+        )
 
-        # 4. Loop
-        for idx, obj in enumerate(rows):
-            # Update progress
-            if idx % 5 == 0:
-                update_task(task_id, {"current": idx})
+        # 4. Loop + stream write
+        with JsonlAtomicWriter(Path(req.output_path)) as writer:
+            for idx, obj in enumerate(iter_jsonl(Path(req.input_path), limit=req.limit or 0)):
+                # Update progress
+                if idx % 5 == 0:
+                    update_task(task_id, {"current": idx})
 
-            input_text = input_builder.build(obj)
-            if not input_text:
-                continue
+                input_text = input_builder.build(obj)
+                if not input_text:
+                    continue
 
-            if provider == "local":
-                responses, weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
-            else:
-                assert remote_client is not None
-                result = remote_client.generate(model=req.model.model, input_text=input_text, prompt_cfg=pr_cfg, gen_cfg=gen_cfg)
-                responses, weights, _decoded = result.candidates, None, result.decoded
+                if provider == "local":
+                    responses, _weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
+                else:
+                    assert remote_client is not None
+                    result = remote_client.generate(
+                        model=req.model.model,
+                        input_text=input_text,
+                        prompt_cfg=pr_cfg,
+                        gen_cfg=gen_cfg,
+                    )
+                    responses, _weights, _decoded = result.candidates, None, result.decoded
 
-            parsed_candidates = [parser.parse(r) for r in responses]
-            out_obj = composer.compose(obj, parsed_candidates)
-            
-            # Pass-through critical fields if missing
-            if "task_id" not in out_obj:
-                out_obj["task_id"] = obj.get("task_id")
-            if "canonical_solution" not in out_obj and obj.get("canonical_solution") is not None:
-                out_obj["canonical_solution"] = obj.get("canonical_solution")
-            
-            out_rows.append(out_obj)
-
-        # 5. Write Output
-        _write_jsonl(Path(req.output_path), out_rows)
+                parsed_candidates = [parser.parse(r) for r in responses]
+                out_obj = composer.compose(obj, parsed_candidates)
+                writer.write_obj(out_obj)
+                out_total += 1
+                if len(preview) < 5:
+                    preview.append(out_obj)
         ms = int((time.time() - t0) * 1000)
-        preview = out_rows[: min(5, len(out_rows))]
         
         if req.unload_after:
             try:
@@ -145,7 +152,7 @@ def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
                 pass
         
         result_data = {
-            "total": len(out_rows),
+            "total": out_total,
             "output_path": req.output_path,
             "preview": preview,
             "elapsed_ms": ms,

@@ -1030,8 +1030,10 @@ def infer_dataset_structured(req: InferDatasetStructuredReq) -> InferDatasetResp
         template_yaml=req.prompt.template_yaml,
         system_prompt_text=req.prompt.system_prompt_text,
     )
-    rows = _read_jsonl(Path(req.input_path), limit=req.limit or 0)
-    out_rows: List[Dict[str, Any]] = []
+    from ccd.server.jsonl_io import JsonlAtomicWriter, iter_jsonl
+
+    out_total = 0
+    preview: List[Dict[str, Any]] = []
     t0 = time.time()
 
     # Builders/parsers/composers
@@ -1046,8 +1048,16 @@ def infer_dataset_structured(req: InferDatasetStructuredReq) -> InferDatasetResp
         prefix=ib_cfg.prefix or "",
         suffix=ib_cfg.suffix or "",
     )
-    parser = make_parser(mode="cot" if req.output_schema.extract_sections else "raw", default_analysis=req.output_schema.trace_analysis)
-    composer = make_composer(mode=req.output_schema.mode, field=req.output_schema.field, emit_flat=req.output_schema.emit_flat)
+    parser = make_parser(
+        mode="cot" if req.output_schema.extract_sections else "raw",
+        default_analysis=req.output_schema.trace_analysis,
+    )
+    composer = make_composer(
+        mode=req.output_schema.mode,
+        field=req.output_schema.field,
+        emit_flat=req.output_schema.emit_flat,
+        keep_original_fields=req.output_schema.keep_original_fields,
+    )
 
     remote_client = None
     try:
@@ -1061,31 +1071,35 @@ def infer_dataset_structured(req: InferDatasetStructuredReq) -> InferDatasetResp
             remote_client = OpenAICompatClient(settings)
             remote_client.__enter__()
 
-        for obj in rows:
-            input_text = input_builder.build(obj)
-            if not input_text:
-                continue
+        with JsonlAtomicWriter(Path(req.output_path)) as writer:
+            for obj in iter_jsonl(Path(req.input_path), limit=req.limit or 0):
+                input_text = input_builder.build(obj)
+                if not input_text:
+                    continue
 
-            if provider == "local":
-                responses, weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
-            else:
-                assert remote_client is not None
-                try:
-                    result = remote_client.generate(model=req.model.model, input_text=input_text, prompt_cfg=pr_cfg, gen_cfg=gen_cfg)
-                except RuntimeError as e:
-                    detail = str(e)
-                    status = 503 if (" 503" in detail or "Service Unavailable" in detail or "HTTP 429" in detail) else 502
-                    raise HTTPException(status_code=status, detail=detail)
-                responses, weights, _decoded = result.candidates, None, result.decoded
+                if provider == "local":
+                    responses, _weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
+                else:
+                    assert remote_client is not None
+                    try:
+                        result = remote_client.generate(
+                            model=req.model.model,
+                            input_text=input_text,
+                            prompt_cfg=pr_cfg,
+                            gen_cfg=gen_cfg,
+                        )
+                    except RuntimeError as e:
+                        detail = str(e)
+                        status = 503 if (" 503" in detail or "Service Unavailable" in detail or "HTTP 429" in detail) else 502
+                        raise HTTPException(status_code=status, detail=detail)
+                    responses, _weights, _decoded = result.candidates, None, result.decoded
 
-            parsed_candidates = [parser.parse(r) for r in responses]
-            out_obj = composer.compose(obj, parsed_candidates)
-            # Ensure task_id & canonical_solution pass through if missing
-            if "task_id" not in out_obj:
-                out_obj["task_id"] = obj.get("task_id")
-            if "canonical_solution" not in out_obj and obj.get("canonical_solution") is not None:
-                out_obj["canonical_solution"] = obj.get("canonical_solution")
-            out_rows.append(out_obj)
+                parsed_candidates = [parser.parse(r) for r in responses]
+                out_obj = composer.compose(obj, parsed_candidates)
+                writer.write_obj(out_obj)
+                out_total += 1
+                if len(preview) < 5:
+                    preview.append(out_obj)
     finally:
         if remote_client is not None:
             try:
@@ -1093,22 +1107,21 @@ def infer_dataset_structured(req: InferDatasetStructuredReq) -> InferDatasetResp
             except Exception:
                 pass
 
-    _write_jsonl(Path(req.output_path), out_rows)
     ms = int((time.time() - t0) * 1000)
-    preview = out_rows[: min(5, len(out_rows))]
     if req.unload_after and provider == "local":
         try:
             _release_model(req.model)
         except Exception:
             pass
     return InferDatasetResp(
-        total=len(out_rows),
+        total=out_total,
         output_path=req.output_path,
         preview=preview,
         elapsed_ms=ms,
         log=[
             f"preset={req.output_schema.preset}",
             f"structured_field={req.output_schema.field}",
+            f"keep_original_fields={req.output_schema.keep_original_fields}",
             f"id_field={req.input_builder.id_field}",
             f"provider={provider}",
             f"num_beams={req.gen.num_beams}",

@@ -176,6 +176,7 @@ class OutputSchema(BaseModel):
     preset: str = "humaneval_structured"  # current preset
     trace_analysis: str = ""  # constant value per variant
     extract_sections: bool = True  # try to parse [Trace Analysis] and [Sanitized Code]
+    keep_original_fields: bool = True  # keep all original JSONL fields in output rows
 
 
 class InferDatasetStructuredReq(BaseModel):

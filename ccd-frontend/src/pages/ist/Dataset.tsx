@@ -20,7 +20,7 @@ export default function IstDatasetPage() {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [percent, setPercent] = useState<number>(0);
   const [status, setStatus] = useState<'normal' | 'active' | 'success' | 'exception'>('normal');
-  const [polling, setPolling] = useState<any>(null);
+  const [, setPolling] = useState<any>(null);
   const useRandom: boolean = (Form.useWatch('use_random', form) as boolean) ?? false;
   const useCombine: boolean = (Form.useWatch('combine_fields', form) as boolean) ?? false;
 

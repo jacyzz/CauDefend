@@ -138,6 +138,10 @@ class HumanEvalComposer(BaseResultComposer):
     }
     """
 
+    def __init__(self, *, field: str = "output", keep_original_fields: bool = True):
+        self.field = field
+        self.keep_original_fields = keep_original_fields
+
     def compose(self, original_row: Dict[str, Any], parsed_candidates: List[Dict[str, str]]) -> Dict[str, Any]:
         variants: List[Dict[str, Any]] = []
         for i, cand in enumerate(parsed_candidates, 1):
@@ -148,14 +152,11 @@ class HumanEvalComposer(BaseResultComposer):
                     "sanitized_code": cand.get("code", ""),
                 }
             )
-        out: Dict[str, Any] = {
-            "task_id": original_row.get("task_id"),
-            "canonical_solution": original_row.get("canonical_solution"),
-            "output": variants,
-        }
-        decl_val = original_row.get("declaration", None)
-        if isinstance(decl_val, str) and decl_val.strip():
-            out["declaration"] = decl_val
+        out: Dict[str, Any] = dict(original_row) if self.keep_original_fields else {}
+        out.setdefault("task_id", original_row.get("task_id"))
+        if "canonical_solution" in original_row:
+            out.setdefault("canonical_solution", original_row.get("canonical_solution"))
+        out[self.field or "output"] = variants
         return out
 
 
@@ -191,11 +192,17 @@ def make_parser(mode: str = "cot", default_analysis: str = "") -> BaseOutputPars
     return ChainOfThoughtParser(default_analysis=default_analysis)
 
 
-def make_composer(mode: str, field: str = "output", emit_flat: bool = False) -> BaseResultComposer:
+def make_composer(
+    mode: str,
+    field: str = "output",
+    emit_flat: bool = False,
+    *,
+    keep_original_fields: bool = True,
+) -> BaseResultComposer:
     if mode == "structured_variants":
-        return HumanEvalComposer()
+        return HumanEvalComposer(field=field, keep_original_fields=keep_original_fields)
     if mode == "single_field":
         return SingleFieldComposer(field=field, emit_flat=emit_flat)
-    return HumanEvalComposer()
+    return HumanEvalComposer(field=field, keep_original_fields=keep_original_fields)
 
 

@@ -1,6 +1,5 @@
-import { Checkbox, Divider, Input, List } from 'antd';
-import type { CheckboxValueType } from 'antd/es/checkbox/Group';
-import { useEffect, useMemo, useState } from 'react';
+import { Checkbox, Divider, Input } from 'antd';
+import { useMemo, useState } from 'react';
 import type { StyleItem } from '../api/ist';
 
 type Props = {
@@ -34,9 +33,9 @@ export default function StylePicker({ styles, value, onChange }: Props) {
     return styles.filter((s) => s.code.includes(q) || s.type.includes(q) || s.subtype.includes(q)).map((s) => s.code);
   }, [styles, query]);
 
-  const handleGroupChange = (groupCodes: string[]) => (codes: CheckboxValueType[]) => {
+  const handleGroupChange = (groupCodes: string[]) => (codes: Array<string | number>) => {
     // Merge selection for this group with existing selections from other groups
-    const selectedInGroup = (codes as string[]) || [];
+    const selectedInGroup = (codes || []).filter((x): x is string => typeof x === 'string');
     const other = (value || []).filter((c) => !groupCodes.includes(c));
     const next = Array.from(new Set([...other, ...selectedInGroup]));
     onChange(next);
