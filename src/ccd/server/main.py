@@ -756,7 +756,7 @@ def infer_generate(req: InferTextReq) -> InferTextResp:
         except RuntimeError as e:
             # Remote provider error (4xx/5xx, network, etc.)
             detail = str(e)
-            status = 503 if " 503" in detail or "Service Unavailable" in detail else 502
+            status = 503 if (" 503" in detail or "Service Unavailable" in detail or "HTTP 429" in detail) else 502
             raise HTTPException(status_code=status, detail=detail)
         responses, weights, decoded = result.candidates, None, result.decoded
     # Optional: parse analysis/code for single inference to align with dataset behavior
@@ -901,7 +901,7 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
                     result = remote_client.generate(model=req.model.model, input_text=input_text, prompt_cfg=pr_cfg, gen_cfg=gen_cfg)
                 except RuntimeError as e:
                     detail = str(e)
-                    status = 503 if " 503" in detail or "Service Unavailable" in detail else 502
+                    status = 503 if (" 503" in detail or "Service Unavailable" in detail or "HTTP 429" in detail) else 502
                     raise HTTPException(status_code=status, detail=detail)
                 responses, weights, _decoded = result.candidates, None, result.decoded
 
@@ -1074,7 +1074,7 @@ def infer_dataset_structured(req: InferDatasetStructuredReq) -> InferDatasetResp
                     result = remote_client.generate(model=req.model.model, input_text=input_text, prompt_cfg=pr_cfg, gen_cfg=gen_cfg)
                 except RuntimeError as e:
                     detail = str(e)
-                    status = 503 if " 503" in detail or "Service Unavailable" in detail else 502
+                    status = 503 if (" 503" in detail or "Service Unavailable" in detail or "HTTP 429" in detail) else 502
                     raise HTTPException(status_code=status, detail=detail)
                 responses, weights, _decoded = result.candidates, None, result.decoded
 

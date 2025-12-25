@@ -12,7 +12,9 @@
 
 很多模型提供商（或中转站）会提供与 OpenAI 风格一致的接口：
 - 路径：通常是 `POST /v1/chat/completions`
-- 鉴权：通常 `Authorization: Bearer <API_KEY>`
+- 鉴权：常见两种写法：
+  - `Authorization: Bearer <API_KEY>`
+  - `Authorization: <API_KEY>`（有些中转站直接要求把 `sk-...` 放在 Authorization 里）
 - 请求体：`{"model": "...", "messages": [{"role":"user","content":"..."}], ...}`
 - 返回：`choices[].message.content`
 
@@ -76,6 +78,31 @@ bash scripts/server/run_api.sh 8001
   - `CCD_REMOTE_CHAT_PATH=chat/completions`
 
 后端会做一次简单的去重，避免拼成 `.../v1/v1/...`。
+
+### 2.4 PoloAPI（示例配置）
+
+根据 PoloAPI 文档，chat 接口为 `POST /v1/chat/completions`，正式环境 server 通常为 `https://poloai.top`。
+
+推荐 `.env`（后端读取）：
+
+```bash
+CCD_REMOTE_BASE_URL=https://poloai.top
+CCD_REMOTE_CHAT_PATH=/v1/chat/completions
+# 注意：PoloAPI 文档在不同页面给出了两种写法。
+# 本项目会优先使用 `Authorization: Bearer <key>`，如果上游返回 401/403 会自动回退尝试 `Authorization: <key>`。
+CCD_REMOTE_API_KEY=sk-your-key
+```
+
+你也可以用下面的命令直连上游验证（注意必须是 POST）：
+
+```bash
+curl -i -X POST https://poloai.top/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-key" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}],"max_tokens":32,"stream":false}'
+```
+
+如果你的上游要求把 key 直接放在 header（不加 `Bearer`），把 header 改成 `-H "Authorization: sk-your-key"`。
 
 ---
 

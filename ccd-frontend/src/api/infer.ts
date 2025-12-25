@@ -30,6 +30,7 @@ export type InferGenParams = {
 };
 
 export type InferTextReq = {
+  provider?: string;
   input_text: string;
   model: InferModelCfg;
   prompt?: InferPromptCfg;
@@ -53,6 +54,7 @@ export async function inferGenerate(body: InferTextReq) {
 }
 
 export type InferDatasetReq = {
+  provider?: string;
   input_path: string;
   output_path: string;
   field: string;
@@ -106,6 +108,7 @@ export type OutputSchema = {
 };
 
 export type InferDatasetStructuredReq = {
+  provider?: string;
   input_path: string;
   output_path: string;
   input_builder?: InputBuilder;

@@ -45,6 +45,9 @@ export PYTHONPATH=/home/nfs/u2023-zlb/CauDefend/src:$PYTHONPATH
 bash scripts/server/run_api.sh 8001
 ```
 
+如需使用远端模型提供商（OpenAI/DeepSeek/中转站等 OpenAI-compatible 接口），请先按文档配置后端环境变量（示例文件：`.env.example`）：
+- 说明文档：[docs/remote-provider.md](docs/remote-provider.md)
+
 - 或手动启动：
 
 ```bash

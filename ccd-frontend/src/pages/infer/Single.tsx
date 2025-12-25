@@ -14,6 +14,7 @@ const DTYPE_OPTIONS = [
 
 export default function InferSingle() {
   const [form] = Form.useForm();
+  const provider = Form.useWatch('provider', form) ?? 'local';
   const [input, setInput] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
@@ -117,6 +118,7 @@ export default function InferSingle() {
     return () => {
       try {
         const vals = form.getFieldsValue();
+        const p = (vals?.provider || 'local') as string;
         if (vals?.unload_on_leave) {
           const model: InferModelCfg | undefined = vals?.model || vals?.model === '' ? undefined : {
             model: vals.model,
@@ -129,7 +131,7 @@ export default function InferSingle() {
             peft_adapter: vals.peft_adapter || undefined,
             peft_merge: !!vals.peft_merge,
           };
-          if (model && typeof model.model === 'string' && model.model.trim()) {
+          if (p === 'local' && model && typeof model.model === 'string' && model.model.trim()) {
             // fire and forget
             unloadModel({ model }).catch(() => void 0);
           }
@@ -184,6 +186,7 @@ export default function InferSingle() {
         seed: vals.seed,
       };
       const res = await inferGenerate({
+        provider: vals.provider || 'local',
         input_text: input,
         model,
         prompt,
@@ -350,6 +353,7 @@ export default function InferSingle() {
                 layout="vertical"
                 onValuesChange={handleValuesChange}
                 initialValues={{
+                  provider: 'local',
                   dtype: 'bfloat16',
                   device_map: 'auto',
                   do_sample: false,
@@ -375,18 +379,28 @@ export default function InferSingle() {
                           <Space style={{ marginBottom: 8 }}>
                             <Button onClick={fillPreset}>填充推荐参数</Button>
                           </Space>
+                          <Form.Item name="provider" label="推理后端 (provider)">
+                            <Select
+                              options={[
+                                { label: '本地 HF (local)', value: 'local' },
+                                { label: '远端 OpenAI兼容 (openai_compatible)', value: 'openai_compatible' },
+                                { label: '远端 OpenAI (openai)', value: 'openai' },
+                                { label: '远端 DeepSeek (deepseek)', value: 'deepseek' },
+                              ]}
+                            />
+                          </Form.Item>
                           <Form.Item name="model" label="模型路径/名称" rules={[{ required: true }]}>
-                            <Input placeholder="/path/to/merged-or-base-model" />
+                            <Input placeholder={provider === 'local' ? '/path/to/merged-or-base-model' : 'remote model name (e.g. gpt-4o-mini / deepseek-chat)'} />
                           </Form.Item>
                           <Row gutter={8}>
                             <Col span={12}>
                               <Form.Item name="dtype" label="dtype">
-                                <Select options={DTYPE_OPTIONS} />
+                                <Select options={DTYPE_OPTIONS} disabled={provider !== 'local'} />
                               </Form.Item>
                             </Col>
                             <Col span={12}>
                               <Form.Item name="device_map" label="device_map">
-                                <Input placeholder="auto / cuda:0 / balanced 等" />
+                                <Input placeholder="auto / cuda:0 / balanced 等" disabled={provider !== 'local'} />
                               </Form.Item>
                             </Col>
                           </Row>
@@ -435,28 +449,28 @@ export default function InferSingle() {
                       children: (
                         <>
                           <Form.Item name="base_model" label="底座模型（可选，用于LoRA）">
-                            <Input placeholder="/path/to/base-model (PEFT时必填或可自动推断)" />
+                            <Input placeholder="/path/to/base-model (PEFT时必填或可自动推断)" disabled={provider !== 'local'} />
                           </Form.Item>
                           <Form.Item name="peft_adapter" label="PEFT 适配器（可选）">
-                            <Input placeholder="/path/to/adapter-dir (含 adapter_config.json)" />
+                            <Input placeholder="/path/to/adapter-dir (含 adapter_config.json)" disabled={provider !== 'local'} />
                           </Form.Item>
                           <Form.Item name="peft_merge" label="合并LoRA到权重" valuePropName="checked">
-                            <Switch />
+                            <Switch disabled={provider !== 'local'} />
                           </Form.Item>
                           <Row gutter={8}>
                             <Col span={8}>
                               <Form.Item name="trust_remote_code" label="trust_remote_code" valuePropName="checked">
-                                <Switch />
+                                <Switch disabled={provider !== 'local'} />
                               </Form.Item>
                             </Col>
                             <Col span={8}>
                               <Form.Item name="low_cpu_mem_usage" label="low_cpu_mem_usage" valuePropName="checked">
-                                <Switch />
+                                <Switch disabled={provider !== 'local'} />
                               </Form.Item>
                             </Col>
                             <Col span={8}>
                               <Form.Item name="use_safetensors" label="use_safetensors" valuePropName="checked">
-                                <Switch />
+                                <Switch disabled={provider !== 'local'} />
                               </Form.Item>
                             </Col>
                           </Row>

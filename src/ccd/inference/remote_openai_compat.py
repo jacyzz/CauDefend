@@ -51,6 +51,31 @@ def _safe_error_text(text: str, secrets: List[str]) -> str:
     return out
 
 
+def _strip_bearer(value: str) -> str:
+    v = (value or "").strip()
+    if v.lower().startswith("bearer "):
+        return v[len("bearer ") :].strip()
+    return v
+
+
+def _format_authorization(api_key: str, *, mode: str) -> str:
+    """Format Authorization header.
+
+    PoloAPI docs show both patterns in different places:
+    - Batch example: Authorization: Bearer <API_KEY>
+    - OpenAPI spec header example: Authorization: sk-
+
+    To maximize compatibility we:
+    - default to bearer (works with OpenAI and most proxies)
+    - optionally fallback to raw key when upstream returns 401/403
+    """
+    token = _strip_bearer(api_key)
+    if mode == "raw":
+        return token
+    # bearer (default)
+    return f"Bearer {token}" if token else ""
+
+
 class OpenAICompatClient:
     """Minimal OpenAI-compatible Chat Completions client.
 
@@ -65,7 +90,7 @@ class OpenAICompatClient:
 
     def __enter__(self) -> "OpenAICompatClient":
         headers = {
-            "Authorization": f"Bearer {self._settings.api_key}",
+            "Accept": "application/json",
             "Content-Type": "application/json",
         }
         self._client = httpx.Client(timeout=self._settings.timeout_s, headers=headers)
@@ -102,23 +127,67 @@ class OpenAICompatClient:
             "n": int(gen_cfg.num_return_sequences or 1),
             "stream": False,
         }
-        # Some providers support seed; safe to include (ignored otherwise)
-        body["seed"] = int(gen_cfg.seed)
+        # Note: do NOT send non-standard fields (like `seed`) by default.
+        # Some proxies enforce strict schemas and will reject unknown fields.
 
         url = _join_url(self._settings.base_url, self._settings.chat_path)
         secrets = [self._settings.api_key]
 
+        def _do_post(auth_mode: str) -> Dict[str, Any]:
+            assert self._client is not None
+            headers = {"Authorization": _format_authorization(self._settings.api_key, mode=auth_mode)}
+            last_err_local: Optional[str] = None
+            for attempt in range(int(self._settings.max_retries) + 1):
+                resp = self._client.post(url, json=body, headers=headers)
+                if 200 <= resp.status_code < 300:
+                    return resp.json()
+
+                # Capture upstream error body (sanitized later)
+                last_err_local = f"HTTP {resp.status_code}: {resp.text[:1000]}"
+
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < int(self._settings.max_retries):
+                    time.sleep(min(8.0, 0.8 * (2 ** attempt)))
+                    continue
+
+                raise httpx.HTTPStatusError(
+                    message=f"Upstream returned HTTP {resp.status_code}",
+                    request=resp.request,
+                    response=resp,
+                )
+            raise RuntimeError(last_err_local or "remote request failed")
+
         last_err: Optional[str] = None
-        for attempt in range(int(self._settings.max_retries) + 1):
+        try:
+            # Default: Bearer
+            data = _do_post("bearer")
+        except httpx.HTTPStatusError as e:
+            # If auth fails, try raw key once (covers proxies that expect Authorization: sk-xxx)
             try:
-                resp = self._client.post(url, json=body)
-                if resp.status_code in (429, 500, 502, 503, 504):
-                    last_err = f"HTTP {resp.status_code}: {resp.text[:500]}"
-                    if attempt < int(self._settings.max_retries):
-                        time.sleep(min(8.0, 0.8 * (2 ** attempt)))
-                        continue
-                resp.raise_for_status()
-                data = resp.json()
+                status = int(getattr(e.response, "status_code", 0) or 0)
+            except Exception:
+                status = 0
+            if status in (401, 403):
+                try:
+                    data = _do_post("raw")
+                except Exception as e2:
+                    last_err = str(e2)
+                    data = None  # type: ignore
+            else:
+                try:
+                    r = e.response
+                    last_err = f"HTTP {r.status_code}: {r.text[:1000]}"
+                except Exception:
+                    last_err = str(e)
+                data = None  # type: ignore
+        except Exception as e:
+            last_err = str(e)
+            data = None  # type: ignore
+
+        if data is None:
+            safe = _safe_error_text(last_err or "remote request failed", secrets)
+            raise RuntimeError(safe)
+
+        try:
                 choices = data.get("choices") or []
                 decoded: List[str] = []
                 candidates: List[str] = []
@@ -141,12 +210,6 @@ class OpenAICompatClient:
 
                 usage = data.get("usage") if isinstance(data, dict) else None
                 return RemoteChatResult(candidates=candidates, decoded=decoded, usage=usage)
-            except Exception as e:
-                last_err = str(e)
-                if attempt < int(self._settings.max_retries):
-                    time.sleep(min(8.0, 0.8 * (2 ** attempt)))
-                    continue
-                break
-
-        safe = _safe_error_text(last_err or "remote request failed", secrets)
-        raise RuntimeError(safe)
+        except Exception as e:
+            safe = _safe_error_text(str(e), secrets)
+            raise RuntimeError(safe)

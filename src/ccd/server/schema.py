@@ -104,6 +104,7 @@ class InferGenParams(BaseModel):
 # --- Inference Text ---
 
 class InferTextReq(BaseModel):
+    provider: str = Field("local", description="'local' for HF; otherwise uses OpenAI-compatible remote provider")
     input_text: str
     model: InferModelCfg
     prompt: InferPromptCfg = InferPromptCfg()
@@ -123,6 +124,7 @@ class InferTextResp(BaseModel):
 # --- Inference Dataset (Classic) ---
 
 class InferDatasetReq(BaseModel):
+    provider: str = Field("local", description="'local' for HF; otherwise uses OpenAI-compatible remote provider")
     input_path: str
     output_path: str
     field: str
@@ -177,6 +179,7 @@ class OutputSchema(BaseModel):
 
 
 class InferDatasetStructuredReq(BaseModel):
+    provider: str = Field("local", description="'local' for HF; otherwise uses OpenAI-compatible remote provider")
     input_path: str
     output_path: str
     input_builder: InputBuilder = InputBuilder()

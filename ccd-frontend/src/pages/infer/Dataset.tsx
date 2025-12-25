@@ -13,6 +13,7 @@ const DTYPE_OPTIONS = [
 
 export default function InferDataset() {
   const [form] = Form.useForm();
+  const provider = Form.useWatch('provider', form) ?? 'local';
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [preview, setPreview] = useState<any[]>([]);
@@ -78,6 +79,7 @@ export default function InferDataset() {
       try {
         const v = form.getFieldsValue();
         if (v?.unload_on_leave) {
+          const p = (v?.provider || 'local') as string;
           if (v?.engine === 'dspy') {
             // DSPy 无单独 unload API，建议使用 unload_after
             return;
@@ -93,7 +95,7 @@ export default function InferDataset() {
             peft_adapter: v.peft_adapter || undefined,
             peft_merge: !!v.peft_merge,
           };
-          if (model && typeof model.model === 'string' && model.model.trim()) {
+          if (p === 'local' && model && typeof model.model === 'string' && model.model.trim()) {
             unloadModel({ model }).catch(() => void 0);
           }
         }
@@ -202,6 +204,7 @@ export default function InferDataset() {
         extract_sections: v.extract_sections !== false, // default true
       };
       const body: InferDatasetStructuredReq = {
+        provider: v.provider || 'local',
         input_path: v.input_path,
         output_path: v.output_path,
         input_builder,
@@ -310,6 +313,7 @@ export default function InferDataset() {
                 layout="vertical"
                 onValuesChange={handleValuesChange}
                 initialValues={{
+                  provider: 'local',
                   dtype: 'bfloat16',
                   device_map: 'auto',
                   do_sample: false,
@@ -464,44 +468,56 @@ export default function InferDataset() {
                       label: '模型 / LoRA',
                       children: (
                         <>
+                          <Form.Item name="provider" label="推理后端 (provider)">
+                            <Select
+                              options={[
+                                { label: '本地 HF (local)', value: 'local' },
+                                { label: '远端 OpenAI兼容 (openai_compatible)', value: 'openai_compatible' },
+                                { label: '远端 OpenAI (openai)', value: 'openai' },
+                                { label: '远端 DeepSeek (deepseek)', value: 'deepseek' },
+                              ]}
+                            />
+                          </Form.Item>
                           <Form.Item name="model" label="模型路径/名称" rules={[{ required: true }]}>
-                            <Input placeholder="/path/to/merged-or-base-model" />
+                            <Input
+                              placeholder={provider === 'local' ? '/path/to/merged-or-base-model' : 'remote model name (e.g. gpt-4o-mini / deepseek-chat)'}
+                            />
                           </Form.Item>
                           <Form.Item name="base_model" label="底座模型（可选，用于LoRA）">
-                            <Input placeholder="/path/to/base-model" />
+                            <Input placeholder="/path/to/base-model" disabled={provider !== 'local'} />
                           </Form.Item>
                           <Form.Item name="peft_adapter" label="PEFT 适配器（可选）">
-                            <Input placeholder="/path/to/adapter-dir (含 adapter_config.json)" />
+                            <Input placeholder="/path/to/adapter-dir (含 adapter_config.json)" disabled={provider !== 'local'} />
                           </Form.Item>
                           <Form.Item name="peft_merge" label="合并LoRA到权重" valuePropName="checked">
-                            <Switch />
+                            <Switch disabled={provider !== 'local'} />
                           </Form.Item>
                           <Row gutter={8}>
                             <Col span={12}>
                               <Form.Item name="dtype" label="dtype">
-                                <Select options={DTYPE_OPTIONS} />
+                                <Select options={DTYPE_OPTIONS} disabled={provider !== 'local'} />
                               </Form.Item>
                             </Col>
                             <Col span={12}>
                               <Form.Item name="device_map" label="device_map">
-                                <Input placeholder="auto / cuda:0 / balanced 等" />
+                                <Input placeholder="auto / cuda:0 / balanced 等" disabled={provider !== 'local'} />
                               </Form.Item>
                             </Col>
                           </Row>
                           <Row gutter={8}>
                             <Col span={8}>
                               <Form.Item name="trust_remote_code" label="trust_remote_code" valuePropName="checked">
-                                <Switch />
+                                <Switch disabled={provider !== 'local'} />
                               </Form.Item>
                             </Col>
                             <Col span={8}>
                               <Form.Item name="low_cpu_mem_usage" label="low_cpu_mem_usage" valuePropName="checked">
-                                <Switch />
+                                <Switch disabled={provider !== 'local'} />
                               </Form.Item>
                             </Col>
                             <Col span={8}>
                               <Form.Item name="use_safetensors" label="use_safetensors" valuePropName="checked">
-                                <Switch />
+                                <Switch disabled={provider !== 'local'} />
                               </Form.Item>
                             </Col>
                           </Row>
