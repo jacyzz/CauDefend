@@ -23,7 +23,7 @@ from ccd.server.schema import (
     InputBuilder,
     OutputSchema
 )
-from ccd.server.tasks import create_task, update_task, get_task
+from ccd.server.tasks import create_task, update_task, get_task, list_tasks, request_cancel
 from ccd.inference.processors import (
     MergeFieldsBuilder,
     make_parser,
@@ -41,13 +41,26 @@ from ccd.inference.processors import (
 
 router = APIRouter()
 
+_LOCAL_DATASET_STRUCTURED_SEM = threading.Semaphore(1)
+
+
+def _is_cancelled(task_id: str) -> bool:
+    info = get_task(task_id)
+    return bool(info.get("cancel_requested"))
+
 def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
     remote_client = None
     provider = (getattr(req, "provider", "local") or "local").strip() or "local"
+    local_slot_acquired = False
     try:
         # Late imports to avoid circular dependency
         from ccd.server.main import _get_or_load_model, _release_model
         from ccd.server.jsonl_io import JsonlAtomicWriter, iter_jsonl, count_jsonl
+
+        if provider == "local":
+            update_task(task_id, {"status": "queued"})
+            _LOCAL_DATASET_STRUCTURED_SEM.acquire()
+            local_slot_acquired = True
 
         update_task(task_id, {"status": "loading_model"})
 
@@ -80,6 +93,10 @@ def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
             template_yaml=req.prompt.template_yaml,
             system_prompt_text=req.prompt.system_prompt_text,
         )
+
+        if _is_cancelled(task_id):
+            update_task(task_id, {"status": "cancelled", "error": "cancelled"})
+            return
 
         # 2. Count Input (for progress)
         total = count_jsonl(Path(req.input_path), limit=req.limit or 0)
@@ -116,6 +133,10 @@ def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
         # 4. Loop + stream write
         with JsonlAtomicWriter(Path(req.output_path)) as writer:
             for idx, obj in enumerate(iter_jsonl(Path(req.input_path), limit=req.limit or 0)):
+                if _is_cancelled(task_id):
+                    # leave partial output file for inspection
+                    update_task(task_id, {"status": "cancelled", "current": idx})
+                    return
                 # Update progress
                 if idx % 5 == 0:
                     update_task(task_id, {"current": idx})
@@ -171,15 +192,73 @@ def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
                 remote_client.__exit__(None, None, None)
             except Exception:
                 pass
+        if local_slot_acquired:
+            try:
+                _LOCAL_DATASET_STRUCTURED_SEM.release()
+            except Exception:
+                pass
 
 
 @router.post("/api/infer/dataset_structured_async")
 def infer_dataset_structured_async(req: InferDatasetStructuredReq):
     task_id = uuid.uuid4().hex
-    create_task(task_id)
+    provider = (getattr(req, "provider", "local") or "local").strip() or "local"
+    model_name = getattr(getattr(req, "model", None), "model", "") or ""
+    create_task(
+        task_id,
+        kind="infer_dataset_structured",
+        provider=provider,
+        input_path=req.input_path,
+        output_path=req.output_path,
+        model=model_name,
+    )
     t = threading.Thread(target=_worker_dataset_structured, args=(task_id, req), daemon=True)
     t.start()
     return {"task_id": task_id}
+
+
+@router.get("/api/infer/tasks")
+def infer_list_tasks() -> Dict[str, Any]:
+    tasks = list_tasks(kind="infer_dataset_structured")
+    # Keep payload small; frontend can query /progress if it needs full result
+    summaries: List[Dict[str, Any]] = []
+    for t in tasks:
+        tid = t.get("task_id")
+        if not tid:
+            continue
+        cur = int(t.get("current", 0) or 0)
+        tot = int(t.get("total", 0) or 0)
+        pct = (cur / tot * 100.0) if tot > 0 else 0.0
+        summaries.append(
+            {
+                "task_id": tid,
+                "kind": t.get("kind"),
+                "provider": t.get("provider"),
+                "model": t.get("model"),
+                "input_path": t.get("input_path"),
+                "output_path": t.get("output_path"),
+                "status": t.get("status"),
+                "current": cur,
+                "total": tot,
+                "percent": pct,
+                "error": t.get("error"),
+                "cancel_requested": bool(t.get("cancel_requested")),
+                "created_at": t.get("created_at"),
+                "updated_at": t.get("updated_at"),
+                # result is optional and can be large; keep only output_path/elapsed_ms when present
+                "result": t.get("result"),
+            }
+        )
+    return {"tasks": summaries}
+
+
+@router.post("/api/infer/tasks/{task_id}/cancel")
+def infer_cancel_task(task_id: str) -> Dict[str, Any]:
+    ok = request_cancel(task_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Task not found")
+    update_task(task_id, {"status": "cancelling"})
+    return {"ok": True}
 
 @router.get("/api/infer/progress")
 def infer_progress(task_id: str = Query(...)):
@@ -200,5 +279,12 @@ def infer_progress(task_id: str = Query(...)):
         "total": total,
         "percent": percent,
         "error": info.get("error"),
-        "result": info.get("result")
+        "result": info.get("result"),
+        "cancel_requested": bool(info.get("cancel_requested")),
+        "provider": info.get("provider"),
+        "model": info.get("model"),
+        "input_path": info.get("input_path"),
+        "output_path": info.get("output_path"),
+        "created_at": info.get("created_at"),
+        "updated_at": info.get("updated_at"),
     }

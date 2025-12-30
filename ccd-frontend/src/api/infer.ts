@@ -133,16 +133,37 @@ export async function inferDatasetStructuredAsync(body: InferDatasetStructuredRe
 
 export type InferProgressResp = {
   task_id: string;
-  status: 'pending' | 'loading_model' | 'running' | 'completed' | 'error';
+  status: 'pending' | 'queued' | 'loading_model' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'error';
   current: number;
   total: number;
   percent: number;
   error?: string;
   result?: InferDatasetResp;
+  cancel_requested?: boolean;
+  provider?: string;
+  model?: string;
+  input_path?: string;
+  output_path?: string;
+  created_at?: number;
+  updated_at?: number;
 };
 
 export async function getInferProgress(task_id: string) {
   const { data } = await http.get<InferProgressResp>('/infer/progress', { params: { task_id } });
+  return data;
+}
+
+export type InferTaskSummary = InferProgressResp & {
+  kind?: string;
+};
+
+export async function listInferTasks() {
+  const { data } = await http.get<{ tasks: InferTaskSummary[] }>('/infer/tasks');
+  return data;
+}
+
+export async function cancelInferTask(task_id: string) {
+  const { data } = await http.post<{ ok: boolean }>(`/infer/tasks/${encodeURIComponent(task_id)}/cancel`, {});
   return data;
 }
 

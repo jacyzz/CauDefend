@@ -195,7 +195,7 @@ export default function InferDataset() {
       
       const res = await inferDatasetStructuredAsync(body);
       setTaskId(res.task_id);
-      message.info('后台任务已提交，开始执行...');
+      message.info('后台任务已提交：可在右上角【任务】查看全部任务');
     } catch (e: any) {
       message.error(e.message ?? '提交失败');
       setLoading(false);

@@ -1,6 +1,9 @@
-import { Layout, Menu, theme } from 'antd';
+import { Button, Layout, Menu, theme } from 'antd';
 import { CodeOutlined } from '@ant-design/icons';
+import { useState } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
+
+import InferTasksDrawer from '../components/InferTasksDrawer';
 
 const { Header, Sider, Content } = Layout;
 
@@ -16,6 +19,7 @@ export default function AppLayout() {
   } = theme.useToken();
   const location = useLocation();
   const selected = items.find((it) => location.pathname.startsWith(it.key))?.key ?? '/';
+  const [tasksOpen, setTasksOpen] = useState(false);
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -24,13 +28,17 @@ export default function AppLayout() {
         <Menu theme="dark" mode="inline" selectedKeys={[selected]} items={items} />
       </Sider>
       <Layout>
-        <Header style={{ background: colorBgContainer }} />
+        <Header style={{ background: colorBgContainer, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+          <Button onClick={() => setTasksOpen(true)}>任务</Button>
+        </Header>
         <Content style={{ margin: '16px' }}>
           <div style={{ padding: 16, minHeight: 'calc(100vh - 96px)', background: colorBgContainer }}>
             <Outlet />
           </div>
         </Content>
       </Layout>
+
+      <InferTasksDrawer open={tasksOpen} onClose={() => setTasksOpen(false)} />
     </Layout>
   );
 }
