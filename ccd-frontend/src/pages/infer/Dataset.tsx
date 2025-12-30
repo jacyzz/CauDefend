@@ -448,6 +448,9 @@ export default function InferDataset() {
                             <Select
                               options={[
                                 { label: '本地 HF (local)', value: 'local' },
+                                { label: '本地 vLLM (vllm)', value: 'vllm' },
+                                { label: '本地 vLLM#0 (vllm0)', value: 'vllm0' },
+                                { label: '本地 vLLM#1 (vllm1)', value: 'vllm1' },
                                 { label: '远端 OpenAI兼容 (openai_compatible)', value: 'openai_compatible' },
                                 { label: '远端 OpenAI (openai)', value: 'openai' },
                                 { label: '远端 DeepSeek (deepseek)', value: 'deepseek' },

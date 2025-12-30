@@ -22,6 +22,22 @@
 
 ---
 
+## 1.1 什么是“鉴权”（Authentication）
+
+鉴权的意思是：服务端需要验证“你是谁/你是否有权限调用”。
+
+在 OpenAI-compatible API 中，最常见的鉴权方式是 HTTP Header：
+- `Authorization: Bearer <API_KEY>`（最常见，OpenAI 与多数中转站/代理都支持）
+- `Authorization: <API_KEY>`（少数中转站使用）
+
+本项目的后端代理会：
+- 默认发送 `Authorization: Bearer <key>`
+- 若上游返回 401/403（鉴权失败），会自动回退尝试 `Authorization: <key>`
+
+如果你的上游（例如本地 vLLM）没有开启鉴权，也没关系；但为了避免误配置，本项目后端仍要求 `*_API_KEY` 非空，你可以填 `dummy` 之类占位符。
+
+---
+
 ## 2. 环境变量（后端配置）
 
 项目提供示例文件：.env.example
@@ -57,6 +73,64 @@ bash scripts/server/run_api.sh 8001
 示例：
 - `provider=deepseek` → `CCD_DEEPSEEK_BASE_URL` + `CCD_DEEPSEEK_API_KEY`
 - `provider=openai` → `CCD_OPENAI_BASE_URL` + `CCD_OPENAI_API_KEY`
+
+---
+
+## 2.5 vLLM（推荐：提速 + 并发）
+
+如果你有 A100/A6000（单卡或多卡），并且主要目标是提升吞吐与并发，推荐把 vLLM 作为一个 OpenAI-compatible 服务运行，然后在本项目里选择 provider 指向它。
+
+### 2.5.1 为什么 vLLM 适合并发
+
+vLLM 的优势主要来自“连续批处理（continuous batching）”和高效的 KV cache 管理：
+- 多个请求可以在同一张 GPU 上更高效地排队/合批
+- 适合 pass@1 或 sampling（而不是严格 beam-search 语义）
+
+本项目对远端（OpenAI-compatible）只会发送标准字段（如 `temperature/top_p/max_tokens/n`），不会发送 `num_beams/num_beam_groups/diversity_penalty` 等 HF beam 参数。
+
+### 2.5.2 单实例 vLLM（一个服务一个端口）
+
+后端 `.env`（示例）：
+
+```bash
+CCD_VLLM_BASE_URL=http://127.0.0.1:8002
+CCD_VLLM_API_KEY=dummy
+CCD_VLLM_CHAT_PATH=/v1/chat/completions
+```
+
+前端选择：
+- `推理后端 (provider)`：`vllm`
+- `模型路径/名称`：填 vLLM 服务端支持的模型名（通常是你启动 vLLM 时指定的 `--served-model-name` 或默认模型名）
+
+### 2.5.3 单卡跑两个模型（一个 GPU 两个 vLLM 服务）
+
+当你“主要目标是用不同模型推理”，并且希望在多数情况下用单卡，你可以在同一张 GPU 上启动两个 vLLM 服务（不同端口），各自加载不同模型：
+
+- vLLM#0：端口 8002，加载模型 A
+- vLLM#1：端口 8003，加载模型 B
+
+对应后端 `.env`：
+
+```bash
+CCD_VLLM0_BASE_URL=http://127.0.0.1:8002
+CCD_VLLM0_API_KEY=dummy
+CCD_VLLM1_BASE_URL=http://127.0.0.1:8003
+CCD_VLLM1_API_KEY=dummy
+```
+
+前端选择：
+- provider 选 `vllm0` 或 `vllm1`
+- `模型路径/名称` 填该服务可用的模型名
+
+注意：两个模型同时驻留显存，显存不够会 OOM；这是“单卡多模型”的硬约束。
+
+### 2.5.4 多卡（两种常见模式）
+
+多卡场景通常有两种部署选择：
+- 单实例张量并行：一个 vLLM 服务跨多张卡运行（适合单模型很大、必须跨卡）
+- 多实例：每张卡一个 vLLM 服务（适合吞吐与隔离，前端用 `vllm0/vllm1/...` 选择）
+
+本项目的 provider 机制对这两种都适用：只要给每个 provider 配好 `CCD_<PROVIDER>_BASE_URL` 即可。
 
 ### 2.2 超时与重试（可选）
 
