@@ -96,13 +96,15 @@ def load_model_and_tokenizer(cfg: ModelConfig):
     torch_dtype = _torch_dtype_from_str(cfg.dtype)
     model_kwargs: Dict[str, Any] = dict(
         device_map=cfg.device_map,
-        dtype=torch_dtype,
         trust_remote_code=cfg.trust_remote_code,
         low_cpu_mem_usage=cfg.low_cpu_mem_usage,
         use_safetensors=cfg.use_safetensors,
         # Enable KV cache to speed up generation, especially for long outputs
         use_cache=True,
     )
+    # Only add torch_dtype if it's not "auto" (transformers expects torch_dtype, not dtype)
+    if torch_dtype != "auto":
+        model_kwargs["torch_dtype"] = torch_dtype
 
     # Explicit base+adapter has highest priority
     if cfg.base_model and cfg.peft_adapter:
