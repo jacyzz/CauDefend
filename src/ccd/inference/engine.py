@@ -84,7 +84,7 @@ def _load_with_peft(base: str, adapter: str, model_kwargs: Dict[str, Any], trust
         from peft import PeftModel  # type: ignore
     except Exception as e:
         raise ImportError("peft is required to load LoRA adapters. Install: pip install peft") from e
-    tok = AutoTokenizer.from_pretrained(base, trust_remote_code=trust_remote_code)
+    tok = AutoTokenizer.from_pretrained(base, trust_remote_code=trust_remote_code, padding_side="left")
     mdl = AutoModelForCausalLM.from_pretrained(base, **model_kwargs)
     mdl = PeftModel.from_pretrained(mdl, adapter)
     if merge:
@@ -96,7 +96,7 @@ def load_model_and_tokenizer(cfg: ModelConfig):
     torch_dtype = _torch_dtype_from_str(cfg.dtype)
     model_kwargs: Dict[str, Any] = dict(
         device_map=cfg.device_map,
-        dtype=torch_dtype,
+        torch_dtype=torch_dtype,
         trust_remote_code=cfg.trust_remote_code,
         low_cpu_mem_usage=cfg.low_cpu_mem_usage,
         use_safetensors=cfg.use_safetensors,
@@ -119,7 +119,7 @@ def load_model_and_tokenizer(cfg: ModelConfig):
             if ("model.safetensors.index.json" in files) or any(fn.endswith(".safetensors") for fn in files):
                 model_kwargs["use_safetensors"] = True
             model = AutoModelForCausalLM.from_pretrained(want, **model_kwargs)
-            tokenizer = AutoTokenizer.from_pretrained(want, trust_remote_code=cfg.trust_remote_code)
+            tokenizer = AutoTokenizer.from_pretrained(want, trust_remote_code=cfg.trust_remote_code, padding_side="left")
         elif _dir_is_peft_adapter(want):
             base_from_cfg = ""
             try:

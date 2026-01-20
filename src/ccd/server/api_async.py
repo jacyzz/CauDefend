@@ -12,6 +12,7 @@ from ccd.inference.engine import (
     GenerationConfig as HfGenConfig,
     generate_for_text,
 )
+from ccd.inference.vllm_runner import VLLMRunner
 from ccd.inference.remote_openai_compat import OpenAICompatClient
 from ccd.server.settings import load_remote_provider_settings
 from ccd.server.schema import (
@@ -67,8 +68,12 @@ def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
         # 1. Load Model (or prepare remote client)
         model = None
         tok = None
+        runner = None
         if provider == "local":
             model, tok = _get_or_load_model(req.model)
+        elif provider == "vllm":
+            runner = VLLMRunner.get_instance()
+            runner.load_model(req.model)
         else:
             try:
                 settings = load_remote_provider_settings(provider)
@@ -131,43 +136,69 @@ def _worker_dataset_structured(task_id: str, req: InferDatasetStructuredReq):
         )
 
         # 4. Loop + stream write
+        batch_size = 32 if provider == "vllm" else 1
+        batch_inputs: List[str] = []
+        batch_objs: List[Dict[str, Any]] = []
+
         with JsonlAtomicWriter(Path(req.output_path)) as writer:
-            for idx, obj in enumerate(iter_jsonl(Path(req.input_path), limit=req.limit or 0)):
+            iterator = iter_jsonl(Path(req.input_path), limit=req.limit or 0)
+
+            def process_batch(cur_inputs, cur_objs):
+                if not cur_inputs: return
+                
+                resp_list = []
+                if provider == "local":
+                    for inp in cur_inputs:
+                        res, _, _ = generate_for_text(model, tok, inp, pr_cfg, gen_cfg)
+                        resp_list.append(res)
+                elif provider == "vllm":
+                    resp_list, _, _ = runner.generate(cur_inputs, pr_cfg, gen_cfg)
+                else:
+                    assert remote_client is not None
+                    for inp in cur_inputs:
+                        res = remote_client.generate(
+                            model=req.model.model,
+                            input_text=inp,
+                            prompt_cfg=pr_cfg,
+                            gen_cfg=gen_cfg,
+                        )
+                        resp_list.append(res.candidates)
+
+                for obj_in, candidates in zip(cur_objs, resp_list):
+                    parsed_candidates = [parser.parse(r) for r in candidates]
+                    out_obj = composer.compose(obj_in, parsed_candidates)
+                    writer.write_obj(out_obj)
+                    if len(preview) < 5:
+                        preview.append(out_obj)
+
+            idx = 0
+            for idx, obj in enumerate(iterator):
                 if _is_cancelled(task_id):
-                    # leave partial output file for inspection
-                    update_task(task_id, {"status": "cancelled", "current": idx})
+                    update_task(task_id, {"status": "cancelled", "current": out_total})
                     return
-                # Update progress
-                if idx % 5 == 0:
-                    update_task(task_id, {"current": idx})
 
                 input_text = input_builder.build(obj)
                 if not input_text:
                     continue
 
-                if provider == "local":
-                    responses, _weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
-                else:
-                    assert remote_client is not None
-                    result = remote_client.generate(
-                        model=req.model.model,
-                        input_text=input_text,
-                        prompt_cfg=pr_cfg,
-                        gen_cfg=gen_cfg,
-                    )
-                    responses, _weights, _decoded = result.candidates, None, result.decoded
+                batch_inputs.append(input_text)
+                batch_objs.append(obj)
 
-                parsed_candidates = [parser.parse(r) for r in responses]
-                out_obj = composer.compose(obj, parsed_candidates)
-                writer.write_obj(out_obj)
-                out_total += 1
-                if len(preview) < 5:
-                    preview.append(out_obj)
+                if len(batch_inputs) >= batch_size:
+                    process_batch(batch_inputs, batch_objs)
+                    out_total += len(batch_inputs)
+                    batch_inputs = []
+                    batch_objs = []
+                    update_task(task_id, {"current": out_total})
+
+            if batch_inputs:
+                process_batch(batch_inputs, batch_objs)
+                out_total += len(batch_inputs)
         ms = int((time.time() - t0) * 1000)
         
         if req.unload_after:
             try:
-                if provider == "local":
+                if provider == "local" or provider == "vllm":
                     _release_model(req.model)
             except Exception:
                 pass

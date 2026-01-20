@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
 import InferTasksDrawer from '../components/InferTasksDrawer';
+import InferTaskBar from '../components/InferTaskBar';
 
 const { Header, Sider, Content } = Layout;
 
@@ -35,10 +36,12 @@ export default function AppLayout() {
           <div style={{ padding: 16, minHeight: 'calc(100vh - 96px)', background: colorBgContainer }}>
             <Outlet />
           </div>
+          <div style={{ height: 40 }} />
         </Content>
       </Layout>
 
       <InferTasksDrawer open={tasksOpen} onClose={() => setTasksOpen(false)} />
+      <InferTaskBar onClick={() => setTasksOpen(true)} />
     </Layout>
   );
 }

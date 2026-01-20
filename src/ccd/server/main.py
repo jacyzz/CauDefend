@@ -26,6 +26,7 @@ from ccd.inference.engine import (
     build_prompt as eng_build_prompt,
     softmax_scores as eng_softmax,
 )
+from ccd.inference.vllm_runner import VLLMRunner
 from ccd.inference.remote_openai_compat import OpenAICompatClient
 from ccd.server.settings import load_remote_provider_settings
 from ccd.inference.processors import (
@@ -114,6 +115,14 @@ def _get_or_load_model(cfg: InferModelCfg):
 
 def _release_model(cfg: InferModelCfg) -> bool:
     """Remove model from cache and try to free GPU memory."""
+    # Try unloading VLLM if it matches
+    try:
+        runner = VLLMRunner.get_instance()
+        if runner.llm and runner.model_name == cfg.model:
+            runner.unload()
+    except Exception:
+        pass
+
     k = _model_cache_key(cfg)
     item = _MODEL_CACHE.pop(k, None)
     if item is None:
@@ -745,6 +754,10 @@ def infer_generate(req: InferTextReq) -> InferTextResp:
     if provider == "local":
         model, tok = _get_or_load_model(req.model)
         responses, weights, decoded = generate_for_text(model, tok, req.input_text, pr_cfg, gen_cfg)
+    elif provider == "vllm":
+        runner = VLLMRunner.get_instance()
+        runner.load_model(req.model)
+        responses, weights, decoded = runner.generate(req.input_text, pr_cfg, gen_cfg)
     else:
         try:
             settings = load_remote_provider_settings(provider)
@@ -871,9 +884,13 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
         return (fallback_prompt, out_text)
 
     remote_client = None
+    runner = None
     try:
         if provider == "local":
             model, tok = _get_or_load_model(req.model)
+        elif provider == "vllm":
+            runner = VLLMRunner.get_instance()
+            runner.load_model(req.model)
         else:
             try:
                 settings = load_remote_provider_settings(provider)
@@ -895,6 +912,8 @@ def infer_dataset(req: InferDatasetReq) -> InferDatasetResp:
 
             if provider == "local":
                 responses, weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
+            elif provider == "vllm":
+                responses, weights, _decoded = runner.generate(input_text, pr_cfg, gen_cfg)
             else:
                 assert remote_client is not None
                 try:
@@ -1060,9 +1079,13 @@ def infer_dataset_structured(req: InferDatasetStructuredReq) -> InferDatasetResp
     )
 
     remote_client = None
+    runner = None
     try:
         if provider == "local":
             model, tok = _get_or_load_model(req.model)
+        elif provider == "vllm":
+            runner = VLLMRunner.get_instance()
+            runner.load_model(req.model)
         else:
             try:
                 settings = load_remote_provider_settings(provider)
@@ -1079,6 +1102,8 @@ def infer_dataset_structured(req: InferDatasetStructuredReq) -> InferDatasetResp
 
                 if provider == "local":
                     responses, _weights, _decoded = generate_for_text(model, tok, input_text, pr_cfg, gen_cfg)
+                elif provider == "vllm":
+                    responses, _weights, _decoded = runner.generate(input_text, pr_cfg, gen_cfg)
                 else:
                     assert remote_client is not None
                     try:

@@ -10,5 +10,6 @@ peft>=0.11.1
 dspy-ai>=2.4.0
 httpx>=0.27.0
 python-dotenv>=1.0.1
+vllm>=0.4.0
 
 
